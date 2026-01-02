@@ -1,0 +1,25 @@
+name: Build AGTR DInput DLL
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2019
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Configure
+      run: cmake -B build -G "Visual Studio 16 2019" -A Win32
+    
+    - name: Build
+      run: cmake --build build --config Release
+    
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: AGTR-AntiCheat-dinput
+        path: build/Release/dinput.dll

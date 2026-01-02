@@ -1,0 +1,9 @@
+LIBRARY dinput
+EXPORTS
+    DirectInputCreateA      @1
+    DirectInputCreateW      @2
+    DirectInputCreateEx     @3
+    DllCanUnloadNow         @4 PRIVATE
+    DllGetClassObject       @5 PRIVATE
+    DllRegisterServer       @6 PRIVATE
+    DllUnregisterServer     @7 PRIVATE

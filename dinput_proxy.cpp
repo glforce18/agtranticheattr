@@ -16,7 +16,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "winhttp.lib")
 
-#define AGTR_VERSION "10.1"
+#define AGTR_VERSION "10.2"
 #define AGTR_HASH_LENGTH 8
 #define AGTR_SCAN_INTERVAL 120000   // 2 dakika
 #define AGTR_INITIAL_DELAY 10000    // 10 saniye
@@ -556,12 +556,25 @@ int CheckSusFiles() {
 // ============================================
 std::string EscapeJson(const std::string& s) {
     std::string out;
-    for (char c : s) {
+    for (unsigned char c : s) {
         if (c == '"') out += "\\\"";
         else if (c == '\\') out += "\\\\";
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
+        else if (c == '\b') out += "\\b";
+        else if (c == '\f') out += "\\f";
+        else if (c < 0x20) {
+            // Kontrol karakterleri - hex olarak escape et
+            char buf[8];
+            sprintf(buf, "\\u%04x", c);
+            out += buf;
+        }
+        else if (c >= 0x80) {
+            // Non-ASCII - olduğu gibi bırak (UTF-8 varsayımı)
+            // Veya güvenli için atla
+            out += c;
+        }
         else out += c;
     }
     return out;

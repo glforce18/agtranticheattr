@@ -295,54 +295,11 @@ int ScanRegistry() {
 }
 
 // ============================================
-// MODULE/DLL SCANNER (Hook Detection)
+// MODULE/DLL SCANNER - DISABLED (may cause crash)
 // ============================================
 int ScanModules() {
-    int susCount = 0;
-    
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-    if (hSnapshot == INVALID_HANDLE_VALUE) return 0;
-    
-    MODULEENTRY32 me;
-    me.dwSize = sizeof(me);
-    
-    std::set<std::string> loadedDlls;
-    
-    if (Module32First(hSnapshot, &me)) {
-        do {
-            char dllName[MAX_PATH];
-            strcpy(dllName, me.szModule);
-            _strlwr(dllName);
-            
-            loadedDlls.insert(dllName);
-            
-            // Check suspicious DLLs
-            for (int i = 0; SUSPICIOUS_DLLS[i]; i++) {
-                if (ContainsCI(dllName, SUSPICIOUS_DLLS[i])) {
-                    // opengl32.dll özel durum - sistem DLL'i mi kontrol et
-                    if (strcmp(SUSPICIOUS_DLLS[i], "opengl32.dll") == 0) {
-                        char sysDir[MAX_PATH];
-                        GetSystemDirectoryA(sysDir, MAX_PATH);
-                        if (ContainsCI(me.szExePath, sysDir)) continue; // Sistem DLL'i, OK
-                    }
-                    
-                    SuspiciousItem item;
-                    item.type = "module";
-                    item.name = me.szModule;
-                    item.path = me.szExePath;
-                    item.details = "Suspicious DLL loaded in game process";
-                    
-                    g_SuspiciousItems.push_back(item);
-                    susCount++;
-                    LogToFile("SUSPICIOUS MODULE: %s (%s)", me.szModule, me.szExePath);
-                    break;
-                }
-            }
-        } while (Module32Next(hSnapshot, &me));
-    }
-    
-    CloseHandle(hSnapshot);
-    return susCount;
+    // Disabled for stability
+    return 0;
 }
 
 // ============================================

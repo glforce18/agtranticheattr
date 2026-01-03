@@ -2,6 +2,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <winhttp.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
 #include <string>
 #include <vector>
 #include <map>
@@ -15,19 +18,50 @@
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
-#define AGTR_VERSION "10.4"
+#define AGTR_VERSION "10.6"
 #define AGTR_HASH_LENGTH 8
-#define AGTR_SCAN_INTERVAL 120000   // 2 dakika
-#define AGTR_INITIAL_DELAY 10000    // 10 saniye
+#define AGTR_HEARTBEAT_INTERVAL 30000  // 30 saniye
 
 // ============================================
 // API CONFIGURATION
 // ============================================
 #define API_HOST L"185.171.25.137"
 #define API_PORT 5000
-#define API_PATH L"/api/v1/scan"
+#define API_PATH_SCAN L"/api/v1/scan"
+#define API_PATH_REGISTER L"/api/v1/client/register"
+#define API_PATH_HEARTBEAT L"/api/v1/client/heartbeat"
+#define API_PATH_SETTINGS L"/api/v1/client/settings"
 #define API_USE_HTTPS false
+
+// ============================================
+// DYNAMIC SETTINGS (API'den gelir)
+// ============================================
+struct ClientSettings {
+    bool scan_enabled = true;
+    int scan_interval = 120000;      // ms
+    bool scan_only_in_server = true;
+    bool scan_processes = true;
+    bool scan_modules = true;
+    bool scan_windows = true;
+    bool scan_files = true;
+    bool scan_registry = true;
+    bool kick_on_detect = true;
+    char message_on_kick[256] = "AGTR Anti-Cheat: Banned";
+};
+ClientSettings g_Settings;
+
+// ============================================
+// GAME STATE
+// ============================================
+bool g_bInServer = false;           // Oyuncu serverde mi?
+char g_szConnectedIP[64] = {0};     // Bağlı olduğu server IP
+int g_iConnectedPort = 0;           // Server port
+DWORD g_dwLastHeartbeat = 0;
+DWORD g_dwLastScan = 0;
+bool g_bSettingsLoaded = false;
 
 // ============================================
 // OBFUSCATED KEY
@@ -267,6 +301,197 @@ void Log(const char* fmt, ...) {
 }
 
 void ToLower(char* s) { for (; *s; s++) *s = tolower(*s); }
+
+// ============================================
+// SERVER DETECTION - hl.exe hangi sunucuya bağlı?
+// ============================================
+bool DetectConnectedServer() {
+    g_bInServer = false;
+    g_szConnectedIP[0] = 0;
+    g_iConnectedPort = 0;
+    
+    // hl.exe'nin PID'ini bul
+    DWORD hlPid = GetCurrentProcessId();
+    
+    // TCP bağlantılarını al
+    MIB_TCPTABLE_OWNER_PID* pTcpTable = NULL;
+    DWORD dwSize = 0;
+    
+    // Boyutu al
+    if (GetExtendedTcpTable(NULL, &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) == ERROR_INSUFFICIENT_BUFFER) {
+        pTcpTable = (MIB_TCPTABLE_OWNER_PID*)malloc(dwSize);
+        if (pTcpTable && GetExtendedTcpTable(pTcpTable, &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) == NO_ERROR) {
+            for (DWORD i = 0; i < pTcpTable->dwNumEntries; i++) {
+                MIB_TCPROW_OWNER_PID& row = pTcpTable->table[i];
+                if (row.dwOwningPid == hlPid && row.dwState == MIB_TCP_STATE_ESTAB) {
+                    // Bağlı bağlantı bulundu
+                    IN_ADDR remoteAddr;
+                    remoteAddr.S_un.S_addr = row.dwRemoteAddr;
+                    int remotePort = ntohs((u_short)row.dwRemotePort);
+                    
+                    // GoldSrc server portları genelde 27015-27020 aralığında
+                    if (remotePort >= 27000 && remotePort <= 27100) {
+                        strcpy(g_szConnectedIP, inet_ntoa(remoteAddr));
+                        g_iConnectedPort = remotePort;
+                        g_bInServer = true;
+                        Log("Connected to server: %s:%d", g_szConnectedIP, g_iConnectedPort);
+                        break;
+                    }
+                }
+            }
+        }
+        if (pTcpTable) free(pTcpTable);
+    }
+    
+    // UDP bağlantıları da kontrol et (GoldSrc UDP kullanır)
+    if (!g_bInServer) {
+        MIB_UDPTABLE_OWNER_PID* pUdpTable = NULL;
+        dwSize = 0;
+        
+        if (GetExtendedUdpTable(NULL, &dwSize, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0) == ERROR_INSUFFICIENT_BUFFER) {
+            pUdpTable = (MIB_UDPTABLE_OWNER_PID*)malloc(dwSize);
+            if (pUdpTable && GetExtendedUdpTable(pUdpTable, &dwSize, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0) == NO_ERROR) {
+                for (DWORD i = 0; i < pUdpTable->dwNumEntries; i++) {
+                    MIB_UDPROW_OWNER_PID& row = pUdpTable->table[i];
+                    if (row.dwOwningPid == hlPid) {
+                        int localPort = ntohs((u_short)row.dwLocalPort);
+                        // Client port genelde 27005 civarı
+                        if (localPort >= 27000 && localPort <= 27100) {
+                            g_bInServer = true;
+                            // UDP'den remote IP alamıyoruz, userinfo'dan alacağız
+                            break;
+                        }
+                    }
+                }
+            }
+            if (pUdpTable) free(pUdpTable);
+        }
+    }
+    
+    return g_bInServer;
+}
+
+// ============================================
+// HTTP Helper - Generic API Call
+// ============================================
+std::string HttpRequest(const wchar_t* path, const std::string& body, const std::string& method = "POST") {
+    std::string response;
+    
+    HINTERNET hSession = WinHttpOpen(L"AGTR/10.6", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    if (!hSession) return response;
+    
+    HINTERNET hConnect = WinHttpConnect(hSession, API_HOST, API_PORT, 0);
+    if (!hConnect) { WinHttpCloseHandle(hSession); return response; }
+    
+    DWORD flags = API_USE_HTTPS ? WINHTTP_FLAG_SECURE : 0;
+    std::wstring wmethod(method.begin(), method.end());
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, wmethod.c_str(), path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return response; }
+    
+    std::wstring headers = L"Content-Type: application/json\r\n";
+    
+    BOOL result;
+    if (body.empty()) {
+        result = WinHttpSendRequest(hRequest, headers.c_str(), -1, NULL, 0, 0, 0);
+    } else {
+        result = WinHttpSendRequest(hRequest, headers.c_str(), -1, (LPVOID)body.c_str(), body.length(), body.length(), 0);
+    }
+    
+    if (result) {
+        result = WinHttpReceiveResponse(hRequest, NULL);
+        if (result) {
+            char buffer[4096] = {0};
+            DWORD bytesRead = 0;
+            WinHttpReadData(hRequest, buffer, sizeof(buffer) - 1, &bytesRead);
+            if (bytesRead > 0) {
+                response = std::string(buffer, bytesRead);
+            }
+        }
+    }
+    
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    
+    return response;
+}
+
+// ============================================
+// SETTINGS - API'den ayarları çek
+// ============================================
+bool FetchSettings() {
+    std::string json = "{\"hwid\":\"" + std::string(g_szHWID) + "\",\"version\":\"" + AGTR_VERSION + "\"}";
+    std::string resp = HttpRequest(API_PATH_REGISTER, json);
+    
+    if (resp.empty()) {
+        Log("Settings fetch failed - no response");
+        return false;
+    }
+    
+    Log("Settings response: %s", resp.substr(0, 200).c_str());
+    
+    // Parse settings
+    // "scan_enabled":true
+    if (strstr(resp.c_str(), "\"scan_enabled\":false")) g_Settings.scan_enabled = false;
+    if (strstr(resp.c_str(), "\"scan_only_in_server\":false")) g_Settings.scan_only_in_server = false;
+    if (strstr(resp.c_str(), "\"scan_processes\":false")) g_Settings.scan_processes = false;
+    if (strstr(resp.c_str(), "\"scan_modules\":false")) g_Settings.scan_modules = false;
+    if (strstr(resp.c_str(), "\"scan_windows\":false")) g_Settings.scan_windows = false;
+    if (strstr(resp.c_str(), "\"scan_files\":false")) g_Settings.scan_files = false;
+    if (strstr(resp.c_str(), "\"scan_registry\":false")) g_Settings.scan_registry = false;
+    if (strstr(resp.c_str(), "\"kick_on_detect\":false")) g_Settings.kick_on_detect = false;
+    
+    // scan_interval
+    const char* intPos = strstr(resp.c_str(), "\"scan_interval\":");
+    if (intPos) {
+        int interval = atoi(intPos + 16);
+        if (interval >= 30 && interval <= 600) {
+            g_Settings.scan_interval = interval * 1000;
+        }
+    }
+    
+    // Ban check
+    if (strstr(resp.c_str(), "\"status\":\"banned\"") || strstr(resp.c_str(), "\"action\":\"kick\"")) {
+        Log("!!! BANNED - Disconnecting !!!");
+        MessageBoxA(NULL, g_Settings.message_on_kick, "AGTR Anti-Cheat", MB_OK | MB_ICONERROR);
+        ExitProcess(0);
+        return false;
+    }
+    
+    // Outdated check
+    if (strstr(resp.c_str(), "\"status\":\"outdated\"")) {
+        Log("!!! OUTDATED CLIENT !!!");
+        MessageBoxA(NULL, "Please update AGTR Anti-Cheat client to the latest version.", "AGTR Update Required", MB_OK | MB_ICONWARNING);
+    }
+    
+    g_bSettingsLoaded = true;
+    Log("Settings loaded: interval=%dms, only_server=%d", g_Settings.scan_interval, g_Settings.scan_only_in_server);
+    return true;
+}
+
+// ============================================
+// HEARTBEAT - Server durumunu bildir
+// ============================================
+void SendHeartbeat() {
+    DetectConnectedServer();
+    
+    char json[512];
+    sprintf(json, "{\"hwid\":\"%s\",\"server_ip\":\"%s\",\"server_port\":%d,\"in_game\":%s}",
+        g_szHWID, g_szConnectedIP, g_iConnectedPort, g_bInServer ? "true" : "false");
+    
+    std::string resp = HttpRequest(API_PATH_HEARTBEAT, json);
+    
+    // Response'dan should_scan kontrol et
+    if (!resp.empty()) {
+        if (strstr(resp.c_str(), "\"should_scan\":false")) {
+            g_Settings.scan_enabled = false;
+        } else if (strstr(resp.c_str(), "\"should_scan\":true")) {
+            g_Settings.scan_enabled = true;
+        }
+    }
+    
+    g_dwLastHeartbeat = GetTickCount();
+}
 
 // ============================================
 // HWID & HASH
@@ -821,22 +1046,62 @@ void DoScan() {
 }
 
 DWORD WINAPI ScanThread(LPVOID) {
-    Sleep(AGTR_INITIAL_DELAY);
+    Sleep(10000); // 10 saniye başlangıç gecikmesi
     
     Log("=== AGTR v%s Started ===", AGTR_VERSION);
     
+    // HWID oluştur
     GenHWID();
     ComputeDLLHash();
-    ScanAllFiles();
-    DoScan();
     
+    // API'den ayarları çek (ve ban kontrolü)
+    if (!FetchSettings()) {
+        Log("Could not fetch settings, using defaults");
+    }
+    
+    // İlk heartbeat
+    SendHeartbeat();
+    
+    // İlk tarama (eğer aktifse)
+    if (g_Settings.scan_enabled) {
+        ScanAllFiles();
+        DoScan();
+        g_dwLastScan = GetTickCount();
+    }
+    
+    // Ana döngü
     while (g_bRunning) {
-        for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) {
-            Sleep(100);
+        Sleep(1000); // Her saniye kontrol
+        
+        DWORD now = GetTickCount();
+        
+        // Heartbeat (30 saniyede bir)
+        if (now - g_dwLastHeartbeat >= AGTR_HEARTBEAT_INTERVAL) {
+            SendHeartbeat();
         }
-        if (g_bRunning) {
-            ScanAllFiles(); // Refresh file cache
+        
+        // Tarama zamanı geldi mi?
+        if (now - g_dwLastScan >= (DWORD)g_Settings.scan_interval) {
+            // Tarama aktif mi?
+            if (!g_Settings.scan_enabled) {
+                continue;
+            }
+            
+            // Sadece serverdeyken tara modu aktif mi?
+            if (g_Settings.scan_only_in_server) {
+                DetectConnectedServer();
+                if (!g_bInServer) {
+                    Log("Not in server, skipping scan");
+                    g_dwLastScan = now; // Zamanı sıfırla
+                    continue;
+                }
+            }
+            
+            // Tarama yap
+            Log("Starting scan (interval: %d ms)", g_Settings.scan_interval);
+            ScanAllFiles();
             DoScan();
+            g_dwLastScan = now;
         }
     }
     

@@ -19,7 +19,7 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "winhttp.lib")
 
-#define AGTR_VERSION "4.0"
+#define AGTR_VERSION "4.1"
 #define AGTR_SCAN_INTERVAL 60000
 #define AGTR_INITIAL_DELAY 5000
 #define AGTR_DLL_CHECK_INTERVAL 5000
@@ -149,33 +149,45 @@ std::string Encrypt(const std::string& data) {
 // DISCORD WEBHOOK
 // ============================================
 bool SendDiscordWebhook(const char* title, const char* description, int color, const char* fields = NULL) {
-    HINTERNET hSession = WinHttpOpen(L"AGTR/4.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
-    if (!hSession) return false;
-    
-    HINTERNET hConnect = WinHttpConnect(hSession, DISCORD_WEBHOOK_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (!hConnect) { WinHttpCloseHandle(hSession); return false; }
-    
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", DISCORD_WEBHOOK_PATH, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
-    
-    // JSON body
-    char json[4096];
-    if (fields) {
-        sprintf(json, "{\"embeds\":[{\"title\":\"%s\",\"description\":\"%s\",\"color\":%d,\"fields\":[%s],\"footer\":{\"text\":\"AGTR Anti-Cheat v%s\"}}]}", 
-            title, description, color, fields, AGTR_VERSION);
-    } else {
-        sprintf(json, "{\"embeds\":[{\"title\":\"%s\",\"description\":\"%s\",\"color\":%d,\"footer\":{\"text\":\"AGTR Anti-Cheat v%s\"}}]}", 
-            title, description, color, AGTR_VERSION);
+    __try {
+        HINTERNET hSession = WinHttpOpen(L"AGTR/4.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+        if (!hSession) return false;
+        
+        // Timeout ayarla (5 saniye)
+        DWORD timeout = 5000;
+        WinHttpSetOption(hSession, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+        WinHttpSetOption(hSession, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+        WinHttpSetOption(hSession, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
+        
+        HINTERNET hConnect = WinHttpConnect(hSession, DISCORD_WEBHOOK_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!hConnect) { WinHttpCloseHandle(hSession); return false; }
+        
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", DISCORD_WEBHOOK_PATH, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
+        
+        // JSON body
+        char json[4096];
+        if (fields) {
+            sprintf(json, "{\"embeds\":[{\"title\":\"%s\",\"description\":\"%s\",\"color\":%d,\"fields\":[%s],\"footer\":{\"text\":\"AGTR Anti-Cheat v%s\"}}]}", 
+                title, description, color, fields, AGTR_VERSION);
+        } else {
+            sprintf(json, "{\"embeds\":[{\"title\":\"%s\",\"description\":\"%s\",\"color\":%d,\"footer\":{\"text\":\"AGTR Anti-Cheat v%s\"}}]}", 
+                title, description, color, AGTR_VERSION);
+        }
+        
+        BOOL result = WinHttpSendRequest(hRequest, L"Content-Type: application/json\r\n", -1, json, strlen(json), strlen(json), 0);
+        if (result) WinHttpReceiveResponse(hRequest, NULL);
+        
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        
+        return result == TRUE;
     }
-    
-    BOOL result = WinHttpSendRequest(hRequest, L"Content-Type: application/json\r\n", -1, json, strlen(json), strlen(json), 0);
-    if (result) WinHttpReceiveResponse(hRequest, NULL);
-    
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    
-    return result == TRUE;
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        // Hata olursa sessizce devam et
+        return false;
+    }
 }
 
 // Escape JSON special characters
@@ -429,6 +441,50 @@ int ScanMemory() {
 // ============================================
 // DLL INJECTION DETECTION
 // ============================================
+
+// Bilinen guvenli DLL'ler (Half-Life, Steam, vb.)
+bool IsKnownSafeDLL(const std::string& fn) {
+    // Sistem klasorleri
+    if (fn.find("windows") != std::string::npos) return true;
+    if (fn.find("system32") != std::string::npos) return true;
+    if (fn.find("syswow64") != std::string::npos) return true;
+    if (fn.find("winsxs") != std::string::npos) return true;
+    
+    // Bilinen guvenli dosya adlari
+    const char* safeDlls[] = {
+        // Half-Life / GoldSrc
+        "hw.dll", "sw.dll", "client.dll", "gameui.dll", "vgui.dll", "vgui2.dll",
+        "filesystem_stdio.dll", "demoplayer.dll", "core.dll", "serverbrowser.dll",
+        "tier0.dll", "vstdlib.dll", "tier0_s.dll", "vstdlib_s.dll",
+        // Steam
+        "steamclient.dll", "steam_api.dll", "gameoverlayrenderer.dll", "crashhandler.dll",
+        // Media / CEF
+        "avcodec-53.dll", "avformat-53.dll", "avutil-51.dll", "chromehtml.dll",
+        "libcef.dll", "icudt.dll",
+        // Audio
+        "mss32.dll", "mssmp3.asi", "mssvoice.asi", "dsound.dll",
+        // SDL / Input
+        "sdl2.dll", "dinput.dll", "dinput8.dll", "xinput1_4.dll",
+        // OpenGL / Graphics  
+        "opengl32.dll", "glu32.dll", "ddraw.dll",
+        // NVIDIA
+        "nvoglv32.dll", "nvapi.dll", "nvwgf2um.dll",
+        // AMD
+        "amdxc32.dll", "atiumdag.dll",
+        NULL
+    };
+    
+    for (int i = 0; safeDlls[i]; i++) {
+        if (fn.find(safeDlls[i]) != std::string::npos) return true;
+    }
+    
+    // Half-Life klasorundeyse guvenli say
+    if (fn.find("half-life") != std::string::npos) return true;
+    if (fn.find("steam") != std::string::npos) return true;
+    
+    return false;
+}
+
 std::set<std::string> GetCurrentModules() {
     std::set<std::string> modules;
     HANDLE hProcess = GetCurrentProcess();
@@ -448,22 +504,26 @@ int CheckNewDLLs() {
     std::set<std::string> current = GetCurrentModules();
     for (const auto& mod : current) {
         if (g_LoadedDLLs.find(mod) == g_LoadedDLLs.end()) {
+            g_LoadedDLLs.insert(mod);
+            
             std::string fn = mod;
             size_t pos = fn.rfind('\\');
             if (pos != std::string::npos) fn = fn.substr(pos + 1);
-            if (mod.find("windows") != std::string::npos || mod.find("system32") != std::string::npos) {
-                g_LoadedDLLs.insert(mod);
-                continue;
+            
+            // Guvenli DLL mi kontrol et
+            if (IsKnownSafeDLL(mod)) {
+                continue;  // Guvenli, atla
             }
+            
+            // Bilinmeyen DLL - SUPHELI!
             Log("!!! INJECTION: %s", mod.c_str());
             
-            // Discord bildirim
+            // Discord bildirim (sadece supheli DLL'ler icin)
             char fields[512];
             sprintf(fields, "{\"name\":\"DLL\",\"value\":\"%s\",\"inline\":false},{\"name\":\"HWID\",\"value\":\"%s\",\"inline\":true}", 
                 JsonEscape(fn).c_str(), g_szHWID);
-            SendDiscordWebhook("DLL Injection Detected", JsonEscape(g_szPlayerName).c_str(), 15158332, fields);
+            SendDiscordWebhook("Suspicious DLL Detected", "Bilinmeyen DLL yuklendi!", 15158332, fields);
             
-            g_LoadedDLLs.insert(mod);
             newCount++;
             g_iInjectionCount++;
         }
@@ -672,11 +732,6 @@ void DoScan() {
 DWORD WINAPI ScanThread(LPVOID) {
     Sleep(AGTR_INITIAL_DELAY);
     Log("AGTR v%s Started", AGTR_VERSION);
-    
-    // Startup notification
-    char fields[256];
-    sprintf(fields, "{\"name\":\"HWID\",\"value\":\"%s\",\"inline\":true},{\"name\":\"Version\",\"value\":\"%s\",\"inline\":true}", g_szHWID, AGTR_VERSION);
-    SendDiscordWebhook("Client Started", "AGTR Anti-Cheat initialized", 3066993, fields);
     
     GenHWID();
     SetupAutoExec();

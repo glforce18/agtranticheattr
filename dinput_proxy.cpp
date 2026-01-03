@@ -176,7 +176,7 @@ struct HashInfo { std::string shortHash, fullHash; };
 std::map<std::string, HashInfo> g_Hashes;
 
 void Log(const char* fmt, ...) {
-    __try {
+    
         std::string path;
         if (g_szDataDir.empty()) {
             path = g_szGameDir + "\\agtr_anticheat.log";  // Fallback
@@ -190,7 +190,7 @@ void Log(const char* fmt, ...) {
             va_list args; va_start(args, fmt); vfprintf(f, fmt, args); va_end(args);
             fprintf(f, "\n"); fclose(f);
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
 }
 
 std::string ToLower(const std::string& s) { 
@@ -200,7 +200,7 @@ std::string ToLower(const std::string& s) {
 }
 
 bool GetFileHashes(const std::string& path, std::string& shortHash, std::string& fullHash) {
-    __try {
+    
         HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
         if (h == INVALID_HANDLE_VALUE) return false;
         MD5 md5; unsigned char buf[8192]; DWORD rd;
@@ -209,26 +209,26 @@ bool GetFileHashes(const std::string& path, std::string& shortHash, std::string&
         fullHash = md5.GetHashString();
         shortHash = fullHash.substr(0, AGTR_HASH_LENGTH);
         return true;
-    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    
 }
 
 void GenHWID() {
-    __try {
+    
         int cpu[4] = {0}; __cpuid(cpu, 0);
         DWORD vol = 0; GetVolumeInformationA("C:\\", NULL, 0, &vol, NULL, NULL, NULL, 0);
         char pc[MAX_COMPUTERNAME_LENGTH + 1] = {0}; DWORD sz = sizeof(pc); GetComputerNameA(pc, &sz);
         sprintf(g_szHWID, "%08X%08X%08X", cpu[0] ^ cpu[1], vol, (pc[0] << 24) | (pc[1] << 16) | (pc[2] << 8) | pc[3]);
         Log("HWID: %s", g_szHWID);
-    } __except(EXCEPTION_EXECUTE_HANDLER) { strcpy(g_szHWID, "UNKNOWN"); }
+    
 }
 
 bool CheckDebug() { 
-    __try {
+    
         if (IsDebuggerPresent()) return true; 
         BOOL d = FALSE; 
         CheckRemoteDebuggerPresent(GetCurrentProcess(), &d); 
         return d == TRUE; 
-    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    
 }
 
 // ============================================
@@ -236,7 +236,7 @@ bool CheckDebug() {
 // ============================================
 int ScanProc() {
     int sus = 0;
-    __try {
+    
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (snap == INVALID_HANDLE_VALUE) return 0;
         PROCESSENTRY32 pe; pe.dwSize = sizeof(pe);
@@ -249,13 +249,13 @@ int ScanProc() {
             } while (Process32Next(snap, &pe));
         }
         CloseHandle(snap);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
     return sus;
 }
 
 static int g_WinSus = 0;
 BOOL CALLBACK EnumWinProc(HWND hwnd, LPARAM) {
-    __try {
+    
         char t[256] = {0}; GetWindowTextA(hwnd, t, 256);
         if (strlen(t) > 0) {
             std::string tl = ToLower(t);
@@ -263,13 +263,13 @@ BOOL CALLBACK EnumWinProc(HWND hwnd, LPARAM) {
                 if (tl.find(g_SusWin[i]) != std::string::npos) { g_WinSus++; break; }
             }
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
     return TRUE;
 }
 int ScanWin() { g_WinSus = 0; EnumWindows(EnumWinProc, 0); return g_WinSus; }
 
 void ScanDir(const std::string& dir, const std::string& pat) {
-    __try {
+    
         WIN32_FIND_DATAA fd;
         HANDLE h = FindFirstFileA((dir + "\\" + pat).c_str(), &fd);
         if (h == INVALID_HANDLE_VALUE) return;
@@ -283,7 +283,7 @@ void ScanDir(const std::string& dir, const std::string& pat) {
             }
         } while (FindNextFileA(h, &fd));
         FindClose(h);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
 }
 
 void ScanAllFiles() {
@@ -320,7 +320,7 @@ int ScanFiles() {
 }
 
 void WriteResult() {
-    __try {
+    
         std::string path = g_szDataDir + "\\agtr_result.txt";
         FILE* f = fopen(path.c_str(), "w");
         if (f) {
@@ -328,11 +328,11 @@ void WriteResult() {
                 g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
             fclose(f);
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
 }
 
 void WriteHashes() {
-    __try {
+    
         std::string path = g_szDataDir + "\\agtr_hashes.txt";
         FILE* f = fopen(path.c_str(), "w");
         if (f) {
@@ -342,11 +342,11 @@ void WriteHashes() {
             }
             fclose(f);
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
 }
 
 void SetupAutoExec() {
-    __try {
+    
         std::string ucPath = g_szValveDir + "\\userconfig.cfg";
         FILE* f = fopen(ucPath.c_str(), "r");
         std::string content;
@@ -362,11 +362,11 @@ void SetupAutoExec() {
             f = fopen(agPath.c_str(), "a");
             if (f) { fprintf(f, "\nexec agtr_send.cfg\n"); fclose(f); }
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
 }
 
 void WriteSendCfg() {
-    __try {
+    
         // CFG icerigini olustur
         std::string content = "// AGTR v";
         content += AGTR_VERSION;
@@ -406,11 +406,11 @@ void WriteSendCfg() {
         if (f) { fputs(content.c_str(), f); fclose(f); }
         
         Log("CFG written: %d hashes", (int)g_Hashes.size());
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
 }
 
 void DoScan() {
-    __try {
+    
         Log("=== SCAN ===");
         g_iSusCount = 0;
         g_bDebugger = CheckDebug();
@@ -422,13 +422,13 @@ void DoScan() {
         Log("Result: %s | Sus: %d", g_bPassed ? "CLEAN" : "SUS", g_iSusCount);
         WriteResult();
         WriteSendCfg();
-    } __except(EXCEPTION_EXECUTE_HANDLER) { Log("DoScan exception"); }
+    
 }
 
 DWORD WINAPI ScanThread(LPVOID) {
     Sleep(AGTR_INITIAL_DELAY);  // 8 saniye bekle
     
-    __try {
+    
         Log("AGTR v%s Started", AGTR_VERSION);
         GenHWID();
         SetupAutoExec();
@@ -440,7 +440,7 @@ DWORD WINAPI ScanThread(LPVOID) {
             DoScan();
             for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) Sleep(100);
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) { Log("ScanThread exception"); }
+    
     
     return 0;
 }
@@ -463,14 +463,14 @@ void StartScanThread() {
 }
 
 void Init() {
-    __try {
+    
         char p[MAX_PATH]; GetModuleFileNameA(NULL, p, MAX_PATH);
         char* s = strrchr(p, '\\'); if (s) *s = 0;
         g_szGameDir = p; 
         g_szValveDir = g_szGameDir + "\\valve";
         CreateDataDir();  // Gizli klasor olustur
         // Thread burada BASLATILMIYOR - DirectInputCreate'de baslatilacak
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
 }
 
 void Shutdown() {

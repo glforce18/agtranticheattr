@@ -16,7 +16,7 @@
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define AGTR_VERSION "4.4"
+#define AGTR_VERSION "4.5"
 #define AGTR_SCAN_INTERVAL 60000
 #define AGTR_INITIAL_DELAY 8000
 #define AGTR_ENCRYPTION_KEY "AGTR2025SecretKey!"
@@ -46,13 +46,12 @@ bool LoadOriginal() {
     return true;
 }
 
-// Forward declaration
 void StartScanThread();
 
 extern "C" {
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateA(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
         if (!LoadOriginal() || !oDirectInputCreateA) return E_FAIL;
-        StartScanThread();  // Oyun hazir, thread'i baslat
+        StartScanThread();
         return oDirectInputCreateA(hinst, dwVersion, ppDI, punkOuter);
     }
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateW(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
@@ -133,7 +132,7 @@ private:
 // ============================================
 std::string Encrypt(const std::string& data) {
     const char* key = AGTR_ENCRYPTION_KEY;
-    int keyLen = strlen(key);
+    size_t keyLen = strlen(key);
     std::string result;
     for (size_t i = 0; i < data.length(); i++) {
         unsigned char c = data[i] ^ key[i % keyLen];
@@ -168,67 +167,70 @@ const char* g_SusKey[] = {
 // ============================================
 HANDLE g_hThread = NULL;
 bool g_bRunning = false;
-std::string g_szGameDir, g_szValveDir, g_szDataDir;
+bool g_bThreadStarted = false;
+char g_szGameDir[MAX_PATH] = {0};
+char g_szValveDir[MAX_PATH] = {0};
 int g_iSusCount = 0;
-bool g_bPassed = true, g_bDebugger = false;
+bool g_bPassed = true;
 char g_szHWID[64] = {0};
-struct HashInfo { std::string shortHash, fullHash; };
-std::map<std::string, HashInfo> g_Hashes;
+std::map<std::string, std::pair<std::string, std::string>> g_Hashes; // filename -> (short, full)
 
+// ============================================
+// LOGGING
+// ============================================
 void Log(const char* fmt, ...) {
-    
-        std::string path;
-        if (g_szDataDir.empty()) {
-            path = g_szGameDir + "\\agtr_anticheat.log";  // Fallback
-        } else {
-            path = g_szDataDir + "\\agtr_anticheat.log";
-        }
-        FILE* f = fopen(path.c_str(), "a");
-        if (f) {
-            SYSTEMTIME st; GetLocalTime(&st);
-            fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-            va_list args; va_start(args, fmt); vfprintf(f, fmt, args); va_end(args);
-            fprintf(f, "\n"); fclose(f);
-        }
-    
+    char path[MAX_PATH];
+    sprintf(path, "%s\\agtr_anticheat.log", g_szValveDir);
+    FILE* f = fopen(path, "a");
+    if (f) {
+        SYSTEMTIME st; GetLocalTime(&st);
+        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        va_list args; va_start(args, fmt); vfprintf(f, fmt, args); va_end(args);
+        fprintf(f, "\n"); fclose(f);
+    }
 }
 
-std::string ToLower(const std::string& s) { 
-    std::string r = s; 
-    std::transform(r.begin(), r.end(), r.begin(), ::tolower); 
-    return r; 
+// ============================================
+// UTILITIES
+// ============================================
+void ToLower(char* str) {
+    for (int i = 0; str[i]; i++) {
+        if (str[i] >= 'A' && str[i] <= 'Z') str[i] += 32;
+    }
 }
 
-bool GetFileHashes(const std::string& path, std::string& shortHash, std::string& fullHash) {
+void GetFileHash(const char* filepath, char* shortHash, char* fullHash) {
+    shortHash[0] = 0;
+    fullHash[0] = 0;
     
-        HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-        if (h == INVALID_HANDLE_VALUE) return false;
-        MD5 md5; unsigned char buf[8192]; DWORD rd;
-        while (ReadFile(h, buf, sizeof(buf), &rd, NULL) && rd > 0) md5.Update(buf, rd);
-        CloseHandle(h);
-        fullHash = md5.GetHashString();
-        shortHash = fullHash.substr(0, AGTR_HASH_LENGTH);
-        return true;
+    HANDLE h = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
     
+    MD5 md5;
+    unsigned char buf[8192];
+    DWORD rd;
+    while (ReadFile(h, buf, sizeof(buf), &rd, NULL) && rd > 0) {
+        md5.Update(buf, rd);
+    }
+    CloseHandle(h);
+    
+    std::string hash = md5.GetHashString();
+    strncpy(fullHash, hash.c_str(), 32);
+    fullHash[32] = 0;
+    strncpy(shortHash, hash.c_str(), AGTR_HASH_LENGTH);
+    shortHash[AGTR_HASH_LENGTH] = 0;
 }
 
 void GenHWID() {
-    
-        int cpu[4] = {0}; __cpuid(cpu, 0);
-        DWORD vol = 0; GetVolumeInformationA("C:\\", NULL, 0, &vol, NULL, NULL, NULL, 0);
-        char pc[MAX_COMPUTERNAME_LENGTH + 1] = {0}; DWORD sz = sizeof(pc); GetComputerNameA(pc, &sz);
-        sprintf(g_szHWID, "%08X%08X%08X", cpu[0] ^ cpu[1], vol, (pc[0] << 24) | (pc[1] << 16) | (pc[2] << 8) | pc[3]);
-        Log("HWID: %s", g_szHWID);
-    
-}
-
-bool CheckDebug() { 
-    
-        if (IsDebuggerPresent()) return true; 
-        BOOL d = FALSE; 
-        CheckRemoteDebuggerPresent(GetCurrentProcess(), &d); 
-        return d == TRUE; 
-    
+    int cpu[4] = {0};
+    __cpuid(cpu, 0);
+    DWORD vol = 0;
+    GetVolumeInformationA("C:\\", NULL, 0, &vol, NULL, NULL, NULL, 0);
+    char pc[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+    DWORD sz = sizeof(pc);
+    GetComputerNameA(pc, &sz);
+    sprintf(g_szHWID, "%08X%08X%08X", cpu[0] ^ cpu[1], vol, (pc[0] << 24) | (pc[1] << 16) | (pc[2] << 8) | pc[3]);
+    Log("HWID: %s", g_szHWID);
 }
 
 // ============================================
@@ -236,72 +238,118 @@ bool CheckDebug() {
 // ============================================
 int ScanProc() {
     int sus = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
     
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snap == INVALID_HANDLE_VALUE) return 0;
-        PROCESSENTRY32 pe; pe.dwSize = sizeof(pe);
-        if (Process32First(snap, &pe)) {
-            do {
-                std::string n = ToLower(pe.szExeFile);
-                for (int i = 0; g_SusProc[i]; i++) {
-                    if (n == g_SusProc[i]) { Log("SUS PROC: %s", pe.szExeFile); sus++; break; }
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    if (Process32First(snap, &pe)) {
+        do {
+            char name[MAX_PATH];
+            strcpy(name, pe.szExeFile);
+            ToLower(name);
+            for (int i = 0; g_SusProc[i]; i++) {
+                if (strcmp(name, g_SusProc[i]) == 0) {
+                    Log("SUS PROC: %s", pe.szExeFile);
+                    sus++;
+                    break;
                 }
-            } while (Process32Next(snap, &pe));
-        }
-        CloseHandle(snap);
-    
+            }
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
     return sus;
 }
 
 static int g_WinSus = 0;
 BOOL CALLBACK EnumWinProc(HWND hwnd, LPARAM) {
-    
-        char t[256] = {0}; GetWindowTextA(hwnd, t, 256);
-        if (strlen(t) > 0) {
-            std::string tl = ToLower(t);
-            for (int i = 0; g_SusWin[i]; i++) {
-                if (tl.find(g_SusWin[i]) != std::string::npos) { g_WinSus++; break; }
+    char title[256] = {0};
+    GetWindowTextA(hwnd, title, 256);
+    if (strlen(title) > 0) {
+        ToLower(title);
+        for (int i = 0; g_SusWin[i]; i++) {
+            if (strstr(title, g_SusWin[i])) {
+                g_WinSus++;
+                break;
             }
         }
-    
+    }
     return TRUE;
 }
-int ScanWin() { g_WinSus = 0; EnumWindows(EnumWinProc, 0); return g_WinSus; }
 
-void ScanDir(const std::string& dir, const std::string& pat) {
+int ScanWin() {
+    g_WinSus = 0;
+    EnumWindows(EnumWinProc, 0);
+    return g_WinSus;
+}
+
+void ScanDir(const char* dir, const char* pattern) {
+    char searchPath[MAX_PATH];
+    sprintf(searchPath, "%s\\%s", dir, pattern);
     
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA((dir + "\\" + pat).c_str(), &fd);
-        if (h == INVALID_HANDLE_VALUE) return;
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                std::string fp = dir + "\\" + fd.cFileName;
-                std::string shortHash, fullHash;
-                if (GetFileHashes(fp, shortHash, fullHash)) {
-                    g_Hashes[ToLower(fd.cFileName)] = {shortHash, fullHash};
-                }
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(searchPath, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            char filepath[MAX_PATH];
+            sprintf(filepath, "%s\\%s", dir, fd.cFileName);
+            
+            char shortHash[16], fullHash[64];
+            GetFileHash(filepath, shortHash, fullHash);
+            
+            if (shortHash[0]) {
+                char filename[MAX_PATH];
+                strcpy(filename, fd.cFileName);
+                ToLower(filename);
+                g_Hashes[filename] = std::make_pair(std::string(shortHash), std::string(fullHash));
             }
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
 }
 
 void ScanAllFiles() {
     g_Hashes.clear();
-    ScanDir(g_szGameDir, "*.dll"); 
+    
+    char dir[MAX_PATH];
+    
+    // Half-Life root
+    ScanDir(g_szGameDir, "*.dll");
     ScanDir(g_szGameDir, "*.exe");
-    ScanDir(g_szValveDir, "*.dll"); 
-    ScanDir(g_szValveDir + "\\cl_dlls", "*.dll");
-    ScanDir(g_szValveDir + "\\dlls", "*.dll"); 
-    ScanDir(g_szValveDir + "\\addons", "*.dll");
-    ScanDir(g_szGameDir + "\\valve_hd", "*.dll");
-    ScanDir(g_szGameDir + "\\valve_hd\\cl_dlls", "*.dll");
-    ScanDir(g_szGameDir + "\\ag", "*.dll"); 
-    ScanDir(g_szGameDir + "\\ag\\cl_dlls", "*.dll");
-    ScanDir(g_szGameDir + "\\ag\\dlls", "*.dll"); 
-    ScanDir(g_szGameDir + "\\ag\\addons", "*.dll");
-    ScanDir(g_szGameDir + "\\cstrike", "*.dll"); 
-    ScanDir(g_szGameDir + "\\cstrike\\cl_dlls", "*.dll");
+    
+    // valve
+    ScanDir(g_szValveDir, "*.dll");
+    sprintf(dir, "%s\\cl_dlls", g_szValveDir);
+    ScanDir(dir, "*.dll");
+    sprintf(dir, "%s\\dlls", g_szValveDir);
+    ScanDir(dir, "*.dll");
+    sprintf(dir, "%s\\addons", g_szValveDir);
+    ScanDir(dir, "*.dll");
+    
+    // valve_hd
+    sprintf(dir, "%s\\valve_hd", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    sprintf(dir, "%s\\valve_hd\\cl_dlls", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    
+    // ag
+    sprintf(dir, "%s\\ag", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    sprintf(dir, "%s\\ag\\cl_dlls", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    sprintf(dir, "%s\\ag\\dlls", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    sprintf(dir, "%s\\ag\\addons", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    
+    // cstrike
+    sprintf(dir, "%s\\cstrike", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    sprintf(dir, "%s\\cstrike\\cl_dlls", g_szGameDir);
+    ScanDir(dir, "*.dll");
+    
     Log("Total hashed: %d files", (int)g_Hashes.size());
 }
 
@@ -309,188 +357,228 @@ int ScanFiles() {
     int sus = 0;
     for (auto& p : g_Hashes) {
         for (int i = 0; g_SusKey[i]; i++) {
-            if (p.first.find(g_SusKey[i]) != std::string::npos) { 
-                Log("SUS FILE: %s", p.first.c_str()); 
-                sus++; 
-                break; 
+            if (p.first.find(g_SusKey[i]) != std::string::npos) {
+                Log("SUS FILE: %s", p.first.c_str());
+                sus++;
+                break;
             }
         }
     }
     return sus;
 }
 
+// ============================================
+// OUTPUT FILES
+// ============================================
 void WriteResult() {
-    
-        std::string path = g_szDataDir + "\\agtr_result.txt";
-        FILE* f = fopen(path.c_str(), "w");
-        if (f) {
-            fprintf(f, "HWID=%s\nPASSED=%d\nSUSPICIOUS=%d\nVERSION=%s\n",
-                g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
-            fclose(f);
-        }
-    
+    char path[MAX_PATH];
+    sprintf(path, "%s\\agtr_result.txt", g_szValveDir);
+    FILE* f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "HWID=%s\n", g_szHWID);
+        fprintf(f, "PASSED=%d\n", g_bPassed ? 1 : 0);
+        fprintf(f, "SUSPICIOUS=%d\n", g_iSusCount);
+        fprintf(f, "VERSION=%s\n", AGTR_VERSION);
+        fclose(f);
+        Log("Result written");
+    }
 }
 
 void WriteHashes() {
-    
-        std::string path = g_szDataDir + "\\agtr_hashes.txt";
-        FILE* f = fopen(path.c_str(), "w");
-        if (f) {
-            fprintf(f, "# AGTR v%s | HWID: %s\n", AGTR_VERSION, g_szHWID);
-            for (auto& h : g_Hashes) {
-                fprintf(f, "%s,%s,%s\n", h.second.shortHash.c_str(), h.second.fullHash.c_str(), h.first.c_str());
-            }
-            fclose(f);
+    char path[MAX_PATH];
+    sprintf(path, "%s\\agtr_hashes.txt", g_szValveDir);
+    FILE* f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "# AGTR v%s | HWID: %s\n", AGTR_VERSION, g_szHWID);
+        for (auto& h : g_Hashes) {
+            fprintf(f, "%s,%s,%s\n", h.second.first.c_str(), h.second.second.c_str(), h.first.c_str());
         }
-    
+        fclose(f);
+        Log("Hashes written");
+    }
 }
 
 void SetupAutoExec() {
+    // valve/userconfig.cfg
+    char path[MAX_PATH];
+    sprintf(path, "%s\\userconfig.cfg", g_szValveDir);
     
-        std::string ucPath = g_szValveDir + "\\userconfig.cfg";
-        FILE* f = fopen(ucPath.c_str(), "r");
-        std::string content;
-        if (f) { char buf[1024]; while (fgets(buf, sizeof(buf), f)) content += buf; fclose(f); }
-        if (content.find("agtr_send.cfg") != std::string::npos) return;
-        f = fopen(ucPath.c_str(), "a");
-        if (f) { fprintf(f, "\nexec agtr_send.cfg\n"); fclose(f); Log("Auto-exec configured"); }
-        
-        std::string agPath = g_szGameDir + "\\ag\\userconfig.cfg";
-        f = fopen(agPath.c_str(), "r"); content.clear();
-        if (f) { char buf[1024]; while (fgets(buf, sizeof(buf), f)) content += buf; fclose(f); }
-        if (content.find("agtr_send.cfg") == std::string::npos) {
-            f = fopen(agPath.c_str(), "a");
-            if (f) { fprintf(f, "\nexec agtr_send.cfg\n"); fclose(f); }
+    FILE* f = fopen(path, "r");
+    std::string content;
+    if (f) {
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), f)) content += buf;
+        fclose(f);
+    }
+    
+    if (content.find("agtr_send.cfg") == std::string::npos) {
+        f = fopen(path, "a");
+        if (f) {
+            fprintf(f, "\nexec agtr_send.cfg\n");
+            fclose(f);
+            Log("Auto-exec added to valve/userconfig.cfg");
         }
+    }
     
+    // ag/userconfig.cfg
+    sprintf(path, "%s\\ag\\userconfig.cfg", g_szGameDir);
+    f = fopen(path, "r");
+    content.clear();
+    if (f) {
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), f)) content += buf;
+        fclose(f);
+    }
+    
+    if (content.find("agtr_send.cfg") == std::string::npos) {
+        f = fopen(path, "a");
+        if (f) {
+            fprintf(f, "\nexec agtr_send.cfg\n");
+            fclose(f);
+            Log("Auto-exec added to ag/userconfig.cfg");
+        }
+    }
 }
 
 void WriteSendCfg() {
+    // valve/agtr_send.cfg
+    char path[MAX_PATH];
+    sprintf(path, "%s\\agtr_send.cfg", g_szValveDir);
+    FILE* f = fopen(path, "w");
+    if (!f) {
+        Log("ERROR: Cannot write %s", path);
+        return;
+    }
     
-        // CFG icerigini olustur
-        std::string content = "// AGTR v";
-        content += AGTR_VERSION;
-        content += "\n\n";
+    fprintf(f, "// AGTR v%s\n\n", AGTR_VERSION);
+    
+    // Status: hwid|passed|suscount|memsus|injections|version
+    char statusData[256];
+    sprintf(statusData, "%s|%d|%d|0|0|%s", g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
+    fprintf(f, "agtr_enc_status %s\n", Encrypt(statusData).c_str());
+    fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+    
+    // Hashes
+    int count = 0;
+    for (auto& h : g_Hashes) {
+        std::string hashData = h.second.first + "|" + h.first;
+        fprintf(f, "agtr_enc_hash %s\n", Encrypt(hashData).c_str());
+        count++;
+        if (count % 5 == 0) {
+            fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+        }
+    }
+    
+    fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+    fprintf(f, "agtr_enc_done %s\n", Encrypt(std::to_string(g_Hashes.size())).c_str());
+    fclose(f);
+    
+    // ag/agtr_send.cfg (kopyala)
+    sprintf(path, "%s\\ag\\agtr_send.cfg", g_szGameDir);
+    f = fopen(path, "w");
+    if (f) {
+        // Ayni icerigi yaz
+        fprintf(f, "// AGTR v%s\n\n", AGTR_VERSION);
+        char statusData2[256];
+        sprintf(statusData2, "%s|%d|%d|0|0|%s", g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
+        fprintf(f, "agtr_enc_status %s\n", Encrypt(statusData2).c_str());
+        fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
         
-        // Status
-        char statusData[256];
-        sprintf(statusData, "%s|%d|%d|0|0|%s", g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
-        content += "agtr_enc_status ";
-        content += Encrypt(statusData);
-        content += "\n";
-        content += "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n";
-        
-        // Hashes
-        int count = 0;
+        count = 0;
         for (auto& h : g_Hashes) {
-            std::string hashData = h.second.shortHash + "|" + h.first;
-            content += "agtr_enc_hash ";
-            content += Encrypt(hashData);
-            content += "\n";
+            std::string hashData = h.second.first + "|" + h.first;
+            fprintf(f, "agtr_enc_hash %s\n", Encrypt(hashData).c_str());
             count++;
             if (count % 5 == 0) {
-                content += "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n";
+                fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
             }
         }
         
-        content += "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n";
-        content += "agtr_enc_done ";
-        content += Encrypt(std::to_string(g_Hashes.size()));
-        content += "\n";
-        
-        // Hem valve hem ag klasorune yaz
-        FILE* f = fopen((g_szValveDir + "\\agtr_send.cfg").c_str(), "w");
-        if (f) { fputs(content.c_str(), f); fclose(f); }
-        
-        f = fopen((g_szGameDir + "\\ag\\agtr_send.cfg").c_str(), "w");
-        if (f) { fputs(content.c_str(), f); fclose(f); }
-        
-        Log("CFG written: %d hashes", (int)g_Hashes.size());
+        fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+        fprintf(f, "agtr_enc_done %s\n", Encrypt(std::to_string(g_Hashes.size())).c_str());
+        fclose(f);
+    }
     
+    Log("CFG written: %d hashes", (int)g_Hashes.size());
 }
 
+// ============================================
+// MAIN SCAN
+// ============================================
 void DoScan() {
+    Log("=== SCAN START ===");
+    g_iSusCount = 0;
     
-        Log("=== SCAN ===");
-        g_iSusCount = 0;
-        g_bDebugger = CheckDebug();
-        if (g_bDebugger) { g_iSusCount += 10; Log("!!! DEBUGGER"); }
-        g_iSusCount += ScanProc();
-        g_iSusCount += ScanWin();
-        g_iSusCount += ScanFiles();
-        g_bPassed = (g_iSusCount == 0);
-        Log("Result: %s | Sus: %d", g_bPassed ? "CLEAN" : "SUS", g_iSusCount);
-        WriteResult();
-        WriteSendCfg();
+    g_iSusCount += ScanProc();
+    g_iSusCount += ScanWin();
+    g_iSusCount += ScanFiles();
     
+    g_bPassed = (g_iSusCount == 0);
+    Log("Result: %s | Sus: %d", g_bPassed ? "CLEAN" : "SUSPICIOUS", g_iSusCount);
+    
+    WriteResult();
+    WriteSendCfg();
 }
 
 DWORD WINAPI ScanThread(LPVOID) {
-    Sleep(AGTR_INITIAL_DELAY);  // 8 saniye bekle
+    Sleep(AGTR_INITIAL_DELAY);
     
+    Log("=== AGTR v%s Started ===", AGTR_VERSION);
     
-        Log("AGTR v%s Started", AGTR_VERSION);
-        GenHWID();
-        SetupAutoExec();
-        ScanAllFiles();
-        WriteHashes();
-        WriteSendCfg();
-        
-        while (g_bRunning) {
-            DoScan();
-            for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) Sleep(100);
+    GenHWID();
+    SetupAutoExec();
+    ScanAllFiles();
+    WriteHashes();
+    WriteSendCfg();
+    
+    while (g_bRunning) {
+        DoScan();
+        for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) {
+            Sleep(100);
         }
-    
+    }
     
     return 0;
 }
 
-bool g_bThreadStarted = false;
-
-void CreateDataDir() {
-    // Half-Life/.agtr klasoru olustur (gizli)
-    g_szDataDir = g_szGameDir + "\\.agtr";
-    CreateDirectoryA(g_szDataDir.c_str(), NULL);
-    // Klasoru gizle
-    SetFileAttributesA(g_szDataDir.c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
-}
-
 void StartScanThread() {
-    if (g_bThreadStarted) return;  // Zaten baslamis
+    if (g_bThreadStarted) return;
     g_bThreadStarted = true;
     g_bRunning = true;
     g_hThread = CreateThread(NULL, 0, ScanThread, NULL, 0, NULL);
 }
 
 void Init() {
+    char path[MAX_PATH];
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    char* slash = strrchr(path, '\\');
+    if (slash) *slash = 0;
     
-        char p[MAX_PATH]; GetModuleFileNameA(NULL, p, MAX_PATH);
-        char* s = strrchr(p, '\\'); if (s) *s = 0;
-        g_szGameDir = p; 
-        g_szValveDir = g_szGameDir + "\\valve";
-        CreateDataDir();  // Gizli klasor olustur
-        // Thread burada BASLATILMIYOR - DirectInputCreate'de baslatilacak
-    
+    strcpy(g_szGameDir, path);
+    sprintf(g_szValveDir, "%s\\valve", path);
 }
 
 void Shutdown() {
     g_bRunning = false;
-    if (g_hThread) { 
-        WaitForSingleObject(g_hThread, 3000); 
-        CloseHandle(g_hThread); 
+    if (g_hThread) {
+        WaitForSingleObject(g_hThread, 3000);
+        CloseHandle(g_hThread);
         g_hThread = NULL;
     }
 }
 
 BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) { 
-        DisableThreadLibraryCalls(hMod); 
-        LoadOriginal(); 
-        Init(); 
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hMod);
+        LoadOriginal();
+        Init();
     }
-    else if (reason == DLL_PROCESS_DETACH) { 
-        Shutdown(); 
-        if (g_hOriginal) { FreeLibrary(g_hOriginal); g_hOriginal = NULL; }
+    else if (reason == DLL_PROCESS_DETACH) {
+        Shutdown();
+        if (g_hOriginal) {
+            FreeLibrary(g_hOriginal);
+            g_hOriginal = NULL;
+        }
     }
     return TRUE;
 }

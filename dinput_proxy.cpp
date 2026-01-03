@@ -16,11 +16,16 @@
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define AGTR_VERSION "4.7"
+#define AGTR_VERSION "6.0"
 #define AGTR_SCAN_INTERVAL 60000
 #define AGTR_INITIAL_DELAY 3000
-#define AGTR_ENCRYPTION_KEY "AGTR2025SecretKey!"
 #define AGTR_HASH_LENGTH 8
+
+// #4 Obfuscated Master Key (XOR 0x5A)
+#define OBF_XOR 0x5A
+static const unsigned char OBF_MKEY[] = {0x1B,0x3D,0x2E,0x28,0x6F,0x6A,0x6F,0x75,0x1D,0x3F,0x2B,0x71}; // "AGTR2025KEY!"
+#define OBF_MKEY_LEN 12
+static void Deobf(const unsigned char* s, int len, char* d) { for(int i=0;i<len;i++) d[i]=s[i]^OBF_XOR; d[len]=0; }
 
 // ============================================
 // DINPUT FORWARDING
@@ -159,18 +164,33 @@ const char* g_SusKey[] = {
     "ssw", "plwh", "ogc", NULL 
 };
 
+// #15 Registry keys for cheat detection
+const char* g_SusReg[] = {
+    "SOFTWARE\\Cheat Engine", "SOFTWARE\\CheatEngine", "SOFTWARE\\ArtMoney",
+    "SOFTWARE\\Process Hacker", "SOFTWARE\\x64dbg", "SOFTWARE\\OllyDbg", NULL
+};
+
 // ============================================
 // GLOBALS
 // ============================================
 HANDLE g_hThread = NULL;
+HANDLE g_hWatchThread = NULL;  // Challenge watcher
 bool g_bRunning = false;
 bool g_bThreadStarted = false;
+bool g_bActivated = false;     // Server handshake completed
 char g_szGameDir[MAX_PATH] = {0};
 char g_szValveDir[MAX_PATH] = {0};
+char g_szChallenge[64] = {0};  // #2 Server challenge token
+char g_szSessionKey[33] = {0}; // #2 Dynamic session key
+char g_szDLLHash[33] = {0};    // #3 Anti-tamper DLL hash
 int g_iSusCount = 0;
+int g_iRegistrySus = 0;        // #15 Registry suspicious count
 bool g_bPassed = true;
 char g_szHWID[64] = {0};
-std::map<std::string, std::pair<std::string, std::string>> g_Hashes; // filename -> (short, full)
+
+// #6 #7 File cache with timestamps
+struct CachedFile { std::string shortHash, fullHash; DWORD modTime; };
+std::map<std::string, CachedFile> g_FileCache;
 
 // ============================================
 // LOGGING
@@ -200,11 +220,12 @@ void GetFileHash(const char* filepath, char* shortHash, char* fullHash) {
     shortHash[0] = 0;
     fullHash[0] = 0;
     
-    HANDLE h = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    // #8 Async-like performance with larger buffer and sequential scan flag
+    HANDLE h = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
     
     MD5 md5;
-    unsigned char buf[8192];
+    unsigned char buf[32768];  // #8 Larger buffer for better I/O
     DWORD rd;
     while (ReadFile(h, buf, sizeof(buf), &rd, NULL) && rd > 0) {
         md5.Update(buf, rd);
@@ -228,6 +249,54 @@ void GenHWID() {
     GetComputerNameA(pc, &sz);
     sprintf(g_szHWID, "%08X%08X%08X", cpu[0] ^ cpu[1], vol, (pc[0] << 24) | (pc[1] << 16) | (pc[2] << 8) | pc[3]);
     Log("HWID: %s", g_szHWID);
+}
+
+// #2 Generate dynamic session key: MD5(MasterKey + HWID + Challenge)
+void GenerateSessionKey() {
+    char masterKey[32]; Deobf(OBF_MKEY, OBF_MKEY_LEN, masterKey);
+    MD5 md5;
+    md5.Update((unsigned char*)masterKey, strlen(masterKey));
+    md5.Update((unsigned char*)g_szHWID, strlen(g_szHWID));
+    md5.Update((unsigned char*)g_szChallenge, strlen(g_szChallenge));
+    std::string key = md5.GetHashString();
+    strncpy(g_szSessionKey, key.c_str(), 32); g_szSessionKey[32] = 0;
+    Log("Session key generated");
+}
+
+// #5 HMAC for integrity verification
+std::string ComputeHMAC(const std::string& data) {
+    MD5 inner, outer;
+    inner.Update((unsigned char*)g_szSessionKey, 32);
+    inner.Update((unsigned char*)data.c_str(), data.length());
+    std::string h1 = inner.GetHashString();
+    outer.Update((unsigned char*)g_szSessionKey, 32);
+    outer.Update((unsigned char*)h1.c_str(), h1.length());
+    return outer.GetHashString().substr(0, 16);
+}
+
+// #3 Anti-tamper: compute own DLL hash
+void ComputeDLLHash() {
+    char path[MAX_PATH];
+    sprintf(path, "%s\\dinput.dll", g_szGameDir);
+    char shortH[16];
+    GetFileHash(path, shortH, g_szDLLHash);
+    Log("DLL Hash: %s", g_szDLLHash);
+}
+
+// #15 Registry scan for cheat tools
+int ScanRegistry() {
+    int sus = 0;
+    for (int i = 0; g_SusReg[i]; i++) {
+        HKEY hKey;
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, g_SusReg[i], 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            Log("SUS REG: HKCU\\%s", g_SusReg[i]); RegCloseKey(hKey); sus++;
+        }
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, g_SusReg[i], 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            Log("SUS REG: HKLM\\%s", g_SusReg[i]); RegCloseKey(hKey); sus++;
+        }
+    }
+    g_iRegistrySus = sus;
+    return sus;
 }
 
 // ============================================
@@ -280,6 +349,7 @@ int ScanWin() {
     return g_WinSus;
 }
 
+// #6 #7 Incremental scan with cache
 void ScanDir(const char* dir, const char* pattern) {
     char searchPath[MAX_PATH];
     sprintf(searchPath, "%s\\%s", dir, pattern);
@@ -290,17 +360,27 @@ void ScanDir(const char* dir, const char* pattern) {
     
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            char filepath[MAX_PATH];
+            char filepath[MAX_PATH], filename[MAX_PATH];
             sprintf(filepath, "%s\\%s", dir, fd.cFileName);
+            strcpy(filename, fd.cFileName);
+            ToLower(filename);
             
+            DWORD modTime = fd.ftLastWriteTime.dwLowDateTime;
+            
+            // #7 Check cache - skip if unchanged
+            auto it = g_FileCache.find(filename);
+            if (it != g_FileCache.end() && it->second.modTime == modTime) continue;
+            
+            // #6 Compute hash for new/modified files
             char shortHash[16], fullHash[64];
             GetFileHash(filepath, shortHash, fullHash);
             
             if (shortHash[0]) {
-                char filename[MAX_PATH];
-                strcpy(filename, fd.cFileName);
-                ToLower(filename);
-                g_Hashes[filename] = std::make_pair(std::string(shortHash), std::string(fullHash));
+                CachedFile cf;
+                cf.shortHash = shortHash;
+                cf.fullHash = fullHash;
+                cf.modTime = modTime;
+                g_FileCache[filename] = cf;
             }
         }
     } while (FindNextFileA(h, &fd));
@@ -308,7 +388,7 @@ void ScanDir(const char* dir, const char* pattern) {
 }
 
 void ScanAllFiles() {
-    g_Hashes.clear();
+    // #6 Incremental - don't clear cache
     
     char dir[MAX_PATH];
     
@@ -347,12 +427,12 @@ void ScanAllFiles() {
     sprintf(dir, "%s\\cstrike\\cl_dlls", g_szGameDir);
     ScanDir(dir, "*.dll");
     
-    Log("Total hashed: %d files", (int)g_Hashes.size());
+    Log("Total hashed: %d files", (int)g_FileCache.size());
 }
 
 int ScanFiles() {
     int sus = 0;
-    for (auto& p : g_Hashes) {
+    for (auto& p : g_FileCache) {
         for (int i = 0; g_SusKey[i]; i++) {
             if (p.first.find(g_SusKey[i]) != std::string::npos) {
                 Log("SUS FILE: %s", p.first.c_str());
@@ -375,9 +455,11 @@ void WriteResult() {
         fprintf(f, "HWID=%s\n", g_szHWID);
         fprintf(f, "PASSED=%d\n", g_bPassed ? 1 : 0);
         fprintf(f, "SUSPICIOUS=%d\n", g_iSusCount);
+        fprintf(f, "REGISTRY=%d\n", g_iRegistrySus);
+        fprintf(f, "DLL_HASH=%s\n", g_szDLLHash);
         fprintf(f, "VERSION=%s\n", AGTR_VERSION);
+        fprintf(f, "ACTIVATED=%d\n", g_bActivated ? 1 : 0);
         fclose(f);
-        Log("Result written");
     }
 }
 
@@ -387,11 +469,40 @@ void WriteHashes() {
     FILE* f = fopen(path, "w");
     if (f) {
         fprintf(f, "# AGTR v%s | HWID: %s\n", AGTR_VERSION, g_szHWID);
-        for (auto& h : g_Hashes) {
-            fprintf(f, "%s,%s,%s\n", h.second.first.c_str(), h.second.second.c_str(), h.first.c_str());
+        for (auto& h : g_FileCache) {
+            fprintf(f, "%s,%s,%s\n", h.second.shortHash.c_str(), h.second.fullHash.c_str(), h.first.c_str());
         }
         fclose(f);
-        Log("Hashes written");
+    }
+}
+
+// #7 Cache save/load
+void SaveCache() {
+    char path[MAX_PATH];
+    sprintf(path, "%s\\agtr_cache.dat", g_szValveDir);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        for (auto& p : g_FileCache)
+            fprintf(f, "%s|%s|%s|%u\n", p.first.c_str(), p.second.shortHash.c_str(), p.second.fullHash.c_str(), p.second.modTime);
+        fclose(f);
+    }
+}
+
+void LoadCache() {
+    char path[MAX_PATH];
+    sprintf(path, "%s\\agtr_cache.dat", g_szValveDir);
+    FILE* f = fopen(path, "r");
+    if (f) {
+        char line[512];
+        while (fgets(line, sizeof(line), f)) {
+            char fn[256], sh[16], fh[64]; DWORD mod;
+            if (sscanf(line, "%[^|]|%[^|]|%[^|]|%u", fn, sh, fh, &mod) == 4) {
+                CachedFile cf; cf.shortHash = sh; cf.fullHash = fh; cf.modTime = mod;
+                g_FileCache[fn] = cf;
+            }
+        }
+        fclose(f);
+        Log("Cache loaded: %d entries", (int)g_FileCache.size());
     }
 }
 
@@ -438,156 +549,134 @@ void SetupAutoExec() {
 }
 
 void WriteSendCfg() {
-    // valve/agtr_send.cfg
     char path[MAX_PATH];
     sprintf(path, "%s\\agtr_send.cfg", g_szValveDir);
     FILE* f = fopen(path, "w");
-    if (!f) {
-        Log("ERROR: Cannot write %s", path);
-        return;
-    }
+    if (!f) return;
     
     fprintf(f, "// AGTR v%s\n\n", AGTR_VERSION);
     
-    // Status: hwid|passed|suscount|memsus|injections|version
-    char statusData[256];
-    sprintf(statusData, "%s|%d|%d|0|0|%s", g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
-    fprintf(f, "agtr_enc_status %s\n", Encrypt(statusData).c_str());
-    fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
-    
-    // Hashes
-    int count = 0;
-    for (auto& h : g_Hashes) {
-        std::string hashData = h.second.first + "|" + h.first;
-        fprintf(f, "agtr_enc_hash %s\n", Encrypt(hashData).c_str());
-        count++;
-        if (count % 5 == 0) {
-            fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+    // If not activated yet, just send hello
+    if (!g_bActivated) {
+        fprintf(f, "agtr_hello %s %s\n", g_szHWID, AGTR_VERSION);
+    } else {
+        // Full response with challenge, HMAC
+        // Status: HWID|passed|suscount|regsus|dllhash|version
+        char statusData[512];
+        sprintf(statusData, "%s|%d|%d|%d|%s|%s", g_szHWID, g_bPassed?1:0, g_iSusCount, g_iRegistrySus, g_szDLLHash, AGTR_VERSION);
+        
+        std::string encStatus = Encrypt(statusData);
+        std::string hmacStatus = ComputeHMAC(statusData);
+        
+        // agtr_response HWID CHALLENGE ENCRYPTED HMAC
+        fprintf(f, "agtr_response %s %s %s %s\n", g_szHWID, g_szChallenge, encStatus.c_str(), hmacStatus.c_str());
+        fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+        
+        // Hashes with HMAC
+        int count = 0;
+        for (auto& h : g_FileCache) {
+            std::string hashData = h.second.shortHash + "|" + h.first;
+            std::string encHash = Encrypt(hashData);
+            std::string hmacHash = ComputeHMAC(hashData);
+            fprintf(f, "agtr_hash %s %s\n", encHash.c_str(), hmacHash.c_str());
+            count++;
+            if (count % 5 == 0) fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
         }
+        
+        fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+        fprintf(f, "agtr_done %d\n", (int)g_FileCache.size());
     }
-    
-    fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
-    fprintf(f, "agtr_enc_done %s\n", Encrypt(std::to_string(g_Hashes.size())).c_str());
     fclose(f);
     
-    // ag/agtr_send.cfg (kopyala)
+    // Copy to ag/
     sprintf(path, "%s\\ag\\agtr_send.cfg", g_szGameDir);
-    f = fopen(path, "w");
-    if (f) {
-        // Ayni icerigi yaz
-        fprintf(f, "// AGTR v%s\n\n", AGTR_VERSION);
-        char statusData2[256];
-        sprintf(statusData2, "%s|%d|%d|0|0|%s", g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
-        fprintf(f, "agtr_enc_status %s\n", Encrypt(statusData2).c_str());
-        fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
-        
-        count = 0;
-        for (auto& h : g_Hashes) {
-            std::string hashData = h.second.first + "|" + h.first;
-            fprintf(f, "agtr_enc_hash %s\n", Encrypt(hashData).c_str());
-            count++;
-            if (count % 5 == 0) {
-                fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
-            }
-        }
-        
-        fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
-        fprintf(f, "agtr_enc_done %s\n", Encrypt(std::to_string(g_Hashes.size())).c_str());
-        fclose(f);
+    FILE* f2 = fopen(path, "w");
+    if (f2) {
+        sprintf(path, "%s\\agtr_send.cfg", g_szValveDir);
+        FILE* src = fopen(path, "r");
+        if (src) { char buf[1024]; while(fgets(buf,sizeof(buf),src)) fputs(buf,f2); fclose(src); }
+        fclose(f2);
     }
     
-    Log("CFG written: %d hashes", (int)g_Hashes.size());
+    Log("CFG written: %d hashes", (int)g_FileCache.size());
 }
 
 // ============================================
 // MAIN SCAN
 // ============================================
 void DoScan() {
-    Log("=== SCAN START ===");
-    g_iSusCount = 0;
+    if (!g_bActivated) return;  // Only scan when server activated
     
+    Log("=== SCAN START (Challenge: %s) ===", g_szChallenge);
+    
+    GenerateSessionKey();
+    ComputeDLLHash();
+    
+    g_iSusCount = 0;
     g_iSusCount += ScanProc();
     g_iSusCount += ScanWin();
+    g_iSusCount += ScanRegistry();  // #15
     g_iSusCount += ScanFiles();
     
     g_bPassed = (g_iSusCount == 0);
-    Log("Result: %s | Sus: %d", g_bPassed ? "CLEAN" : "SUSPICIOUS", g_iSusCount);
+    Log("Result: %s | Sus: %d | Reg: %d", g_bPassed ? "CLEAN" : "SUSPICIOUS", g_iSusCount, g_iRegistrySus);
     
     WriteResult();
+    WriteHashes();
     WriteSendCfg();
+    SaveCache();
+}
+
+// Challenge watcher - server'dan challenge bekle
+DWORD WINAPI WatchThread(LPVOID) {
+    char challengePath[MAX_PATH];
+    sprintf(challengePath, "%s\\agtr_challenge.txt", g_szValveDir);
+    
+    Log("Watching for challenge...");
+    
+    while (g_bRunning) {
+        FILE* f = fopen(challengePath, "r");
+        if (f) {
+            char token[64] = {0};
+            if (fgets(token, sizeof(token), f)) {
+                char* nl = strchr(token, '\n'); if (nl) *nl = 0;
+                char* cr = strchr(token, '\r'); if (cr) *cr = 0;
+                
+                if (strlen(token) > 0 && strcmp(token, g_szChallenge) != 0) {
+                    strncpy(g_szChallenge, token, 63); g_szChallenge[63] = 0;
+                    g_bActivated = true;
+                    Log("Challenge received: %s", g_szChallenge);
+                    DoScan();
+                }
+            }
+            fclose(f);
+            DeleteFileA(challengePath);
+        }
+        Sleep(500);
+    }
+    return 0;
 }
 
 DWORD WINAPI ScanThread(LPVOID) {
-    // Debug
-    char logpath[MAX_PATH];
-    sprintf(logpath, "%s\\agtr_debug.txt", g_szGameDir);
-    FILE* df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "ScanThread started, waiting %d ms\n", AGTR_INITIAL_DELAY);
-        fclose(df);
-    }
-    
     Sleep(AGTR_INITIAL_DELAY);
-    
-    // Debug after sleep
-    df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "Sleep done, starting scan...\n");
-        fprintf(df, "ValveDir: %s\n", g_szValveDir);
-        fclose(df);
-    }
     
     Log("=== AGTR v%s Started ===", AGTR_VERSION);
     
-    // Debug - Log yazildi mi?
-    df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "Log() called\n");
-        fclose(df);
-    }
-    
     GenHWID();
-    
-    df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "HWID: %s\n", g_szHWID);
-        fclose(df);
-    }
-    
+    LoadCache();
     SetupAutoExec();
-    
-    df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "SetupAutoExec done\n");
-        fclose(df);
-    }
-    
     ScanAllFiles();
-    
-    df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "ScanAllFiles done, %d hashes\n", (int)g_Hashes.size());
-        fclose(df);
-    }
-    
     WriteHashes();
+    WriteSendCfg();  // Initial hello
+    SaveCache();
     
-    df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "WriteHashes done\n");
-        fclose(df);
-    }
+    Log("Hello sent, waiting for server challenge...");
     
-    WriteSendCfg();
-    
-    df = fopen(logpath, "a");
-    if (df) {
-        fprintf(df, "WriteSendCfg done - INIT COMPLETE\n");
-        fclose(df);
-    }
-    
+    // Periodic rescan if activated
     while (g_bRunning) {
-        DoScan();
+        if (g_bActivated) {
+            DoScan();
+        }
         for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) {
             Sleep(100);
         }
@@ -600,17 +689,8 @@ void StartScanThread() {
     if (g_bThreadStarted) return;
     g_bThreadStarted = true;
     g_bRunning = true;
-    
-    // Debug
-    char logpath[MAX_PATH];
-    sprintf(logpath, "%s\\agtr_debug.txt", g_szGameDir);
-    FILE* f = fopen(logpath, "a");
-    if (f) {
-        fprintf(f, "StartScanThread called\n");
-        fclose(f);
-    }
-    
     g_hThread = CreateThread(NULL, 0, ScanThread, NULL, 0, NULL);
+    g_hWatchThread = CreateThread(NULL, 0, WatchThread, NULL, 0, NULL);
 }
 
 void Init() {
@@ -621,26 +701,12 @@ void Init() {
     
     strcpy(g_szGameDir, path);
     sprintf(g_szValveDir, "%s\\valve", path);
-    
-    // Debug: Hemen log yaz
-    char logpath[MAX_PATH];
-    sprintf(logpath, "%s\\agtr_debug.txt", g_szGameDir);
-    FILE* f = fopen(logpath, "w");
-    if (f) {
-        fprintf(f, "AGTR v%s Init\n", AGTR_VERSION);
-        fprintf(f, "GameDir: %s\n", g_szGameDir);
-        fprintf(f, "ValveDir: %s\n", g_szValveDir);
-        fclose(f);
-    }
 }
 
 void Shutdown() {
     g_bRunning = false;
-    if (g_hThread) {
-        WaitForSingleObject(g_hThread, 3000);
-        CloseHandle(g_hThread);
-        g_hThread = NULL;
-    }
+    if (g_hThread) { WaitForSingleObject(g_hThread, 2000); CloseHandle(g_hThread); }
+    if (g_hWatchThread) { WaitForSingleObject(g_hWatchThread, 2000); CloseHandle(g_hWatchThread); }
 }
 
 BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {

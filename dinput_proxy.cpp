@@ -1,7 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
-#include <winhttp.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -16,19 +15,12 @@
 
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "gdi32.lib")
-#pragma comment(lib, "winhttp.lib")
 
-#define AGTR_VERSION "4.1"
+#define AGTR_VERSION "4.4"
 #define AGTR_SCAN_INTERVAL 60000
-#define AGTR_INITIAL_DELAY 5000
-#define AGTR_DLL_CHECK_INTERVAL 5000
+#define AGTR_INITIAL_DELAY 8000
 #define AGTR_ENCRYPTION_KEY "AGTR2025SecretKey!"
 #define AGTR_HASH_LENGTH 8
-
-// Discord Webhook URL
-#define DISCORD_WEBHOOK_HOST L"discord.com"
-#define DISCORD_WEBHOOK_PATH L"/api/webhooks/1456818284543348919/eRkNm3naWMqRZT1TmyyKQtA0IWp74NuVYuYNv4K1VEmiL8j6x10tnniYHid8ETIWaOUl"
 
 // ============================================
 // DINPUT FORWARDING
@@ -54,17 +46,23 @@ bool LoadOriginal() {
     return true;
 }
 
+// Forward declaration
+void StartScanThread();
+
 extern "C" {
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateA(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
         if (!LoadOriginal() || !oDirectInputCreateA) return E_FAIL;
+        StartScanThread();  // Oyun hazir, thread'i baslat
         return oDirectInputCreateA(hinst, dwVersion, ppDI, punkOuter);
     }
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateW(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
         if (!LoadOriginal() || !oDirectInputCreateW) return E_FAIL;
+        StartScanThread();
         return oDirectInputCreateW(hinst, dwVersion, ppDI, punkOuter);
     }
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateEx(HINSTANCE hinst, DWORD dwVersion, REFGUID riid, LPVOID* ppvOut, LPVOID punkOuter) {
         if (!LoadOriginal() || !oDirectInputCreateEx) return E_FAIL;
+        StartScanThread();
         return oDirectInputCreateEx(hinst, dwVersion, riid, ppvOut, punkOuter);
     }
 }
@@ -146,482 +144,164 @@ std::string Encrypt(const std::string& data) {
 }
 
 // ============================================
-// DISCORD WEBHOOK
-// ============================================
-bool SendDiscordWebhook(const char* title, const char* description, int color, const char* fields = NULL) {
-    __try {
-        HINTERNET hSession = WinHttpOpen(L"AGTR/4.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
-        if (!hSession) return false;
-        
-        // Timeout ayarla (5 saniye)
-        DWORD timeout = 5000;
-        WinHttpSetOption(hSession, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
-        WinHttpSetOption(hSession, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
-        WinHttpSetOption(hSession, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-        
-        HINTERNET hConnect = WinHttpConnect(hSession, DISCORD_WEBHOOK_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
-        if (!hConnect) { WinHttpCloseHandle(hSession); return false; }
-        
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", DISCORD_WEBHOOK_PATH, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-        if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
-        
-        // JSON body
-        char json[4096];
-        if (fields) {
-            sprintf(json, "{\"embeds\":[{\"title\":\"%s\",\"description\":\"%s\",\"color\":%d,\"fields\":[%s],\"footer\":{\"text\":\"AGTR Anti-Cheat v%s\"}}]}", 
-                title, description, color, fields, AGTR_VERSION);
-        } else {
-            sprintf(json, "{\"embeds\":[{\"title\":\"%s\",\"description\":\"%s\",\"color\":%d,\"footer\":{\"text\":\"AGTR Anti-Cheat v%s\"}}]}", 
-                title, description, color, AGTR_VERSION);
-        }
-        
-        BOOL result = WinHttpSendRequest(hRequest, L"Content-Type: application/json\r\n", -1, json, strlen(json), strlen(json), 0);
-        if (result) WinHttpReceiveResponse(hRequest, NULL);
-        
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        
-        return result == TRUE;
-    }
-    __except(EXCEPTION_EXECUTE_HANDLER) {
-        // Hata olursa sessizce devam et
-        return false;
-    }
-}
-
-// Escape JSON special characters
-std::string JsonEscape(const std::string& s) {
-    std::string result;
-    for (char c : s) {
-        switch (c) {
-            case '"': result += "\\\""; break;
-            case '\\': result += "\\\\"; break;
-            case '\n': result += "\\n"; break;
-            case '\r': result += "\\r"; break;
-            case '\t': result += "\\t"; break;
-            default: result += c;
-        }
-    }
-    return result;
-}
-
-// ============================================
-// MEMORY SIGNATURES
-// ============================================
-struct MemSig { const char* name; const unsigned char* pattern; int length; const char* mask; };
-unsigned char SIG_AIMBOT1[] = { 0x8B, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x85, 0xC9, 0x74, 0x00, 0x8B, 0x01 };
-unsigned char SIG_WALLHACK1[] = { 0xD9, 0x05, 0x00, 0x00, 0x00, 0x00, 0xD8, 0x1D, 0x00, 0x00, 0x00, 0x00, 0xDF, 0xE0 };
-unsigned char SIG_SPEEDHACK1[] = { 0xF3, 0x0F, 0x10, 0x05, 0x00, 0x00, 0x00, 0x00, 0xF3, 0x0F, 0x59, 0xC1 };
-MemSig g_MemSigs[] = {
-    { "Aimbot", SIG_AIMBOT1, 12, "xx????xx?xx" },
-    { "Wallhack", SIG_WALLHACK1, 14, "xx????xx????xx" },
-    { "Speedhack", SIG_SPEEDHACK1, 12, "xxxx????xxxx" },
-    { NULL, NULL, 0, NULL }
-};
-
-// ============================================
 // SUSPICIOUS LISTS
 // ============================================
-const char* g_SusProc[] = { "cheatengine-x86_64.exe", "cheatengine-i386.exe", "cheatengine.exe", "artmoney.exe", "ollydbg.exe", "x64dbg.exe", "x32dbg.exe", "processhacker.exe", "extreme injector.exe", "wemod.exe", "ida.exe", "ida64.exe", NULL };
-const char* g_SusWin[] = { "cheat engine", "artmoney", "process hacker", "extreme injector", "[aimbot]", "[wallhack]", "[esp]", NULL };
-const char* g_SusKey[] = { "aimbot", "wallhack", "speedhack", "norecoil", "triggerbot", "ssw", "plwh", "ogc", "opengl32.dll", NULL };
+const char* g_SusProc[] = { 
+    "cheatengine-x86_64.exe", "cheatengine-i386.exe", "cheatengine.exe", 
+    "artmoney.exe", "ollydbg.exe", "x64dbg.exe", "x32dbg.exe", 
+    "processhacker.exe", "extreme injector.exe", "wemod.exe", 
+    "ida.exe", "ida64.exe", NULL 
+};
+
+const char* g_SusWin[] = { 
+    "cheat engine", "artmoney", "process hacker", 
+    "extreme injector", "[aimbot]", "[wallhack]", "[esp]", NULL 
+};
+
+const char* g_SusKey[] = { 
+    "aimbot", "wallhack", "speedhack", "norecoil", "triggerbot", 
+    "ssw", "plwh", "ogc", NULL 
+};
 
 // ============================================
 // GLOBALS
 // ============================================
-HANDLE g_hThread = NULL, g_hDllWatchThread = NULL, g_hCommandThread = NULL;
+HANDLE g_hThread = NULL;
 bool g_bRunning = false;
-std::string g_szGameDir, g_szValveDir;
-std::string g_szPlayerName = "Unknown";
-std::string g_szServerIP = "Unknown";
+std::string g_szGameDir, g_szValveDir, g_szDataDir;
 int g_iSusCount = 0;
 bool g_bPassed = true, g_bDebugger = false;
 char g_szHWID[64] = {0};
 struct HashInfo { std::string shortHash, fullHash; };
 std::map<std::string, HashInfo> g_Hashes;
-std::set<std::string> g_LoadedDLLs;
-int g_iMemorySus = 0, g_iInjectionCount = 0;
-bool g_bScreenshotRequested = false;
 
 void Log(const char* fmt, ...) {
-    char path[MAX_PATH]; strcpy(path, g_szGameDir.c_str()); strcat(path, "\\agtr_anticheat.log");
-    FILE* f = fopen(path, "a");
-    if (f) {
-        SYSTEMTIME st; GetLocalTime(&st);
-        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        va_list args; va_start(args, fmt); vfprintf(f, fmt, args); va_end(args);
-        fprintf(f, "\n"); fclose(f);
-    }
+    __try {
+        std::string path;
+        if (g_szDataDir.empty()) {
+            path = g_szGameDir + "\\agtr_anticheat.log";  // Fallback
+        } else {
+            path = g_szDataDir + "\\agtr_anticheat.log";
+        }
+        FILE* f = fopen(path.c_str(), "a");
+        if (f) {
+            SYSTEMTIME st; GetLocalTime(&st);
+            fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+            va_list args; va_start(args, fmt); vfprintf(f, fmt, args); va_end(args);
+            fprintf(f, "\n"); fclose(f);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-std::string ToLower(const std::string& s) { std::string r = s; std::transform(r.begin(), r.end(), r.begin(), ::tolower); return r; }
-std::string ToUpper(const std::string& s) { std::string r = s; std::transform(r.begin(), r.end(), r.begin(), ::toupper); return r; }
+std::string ToLower(const std::string& s) { 
+    std::string r = s; 
+    std::transform(r.begin(), r.end(), r.begin(), ::tolower); 
+    return r; 
+}
 
 bool GetFileHashes(const std::string& path, std::string& shortHash, std::string& fullHash) {
-    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    MD5 md5; unsigned char buf[8192]; DWORD rd;
-    while (ReadFile(h, buf, sizeof(buf), &rd, NULL) && rd > 0) md5.Update(buf, rd);
-    CloseHandle(h);
-    fullHash = md5.GetHashString();
-    shortHash = fullHash.substr(0, AGTR_HASH_LENGTH);
-    return true;
+    __try {
+        HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        MD5 md5; unsigned char buf[8192]; DWORD rd;
+        while (ReadFile(h, buf, sizeof(buf), &rd, NULL) && rd > 0) md5.Update(buf, rd);
+        CloseHandle(h);
+        fullHash = md5.GetHashString();
+        shortHash = fullHash.substr(0, AGTR_HASH_LENGTH);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 void GenHWID() {
-    int cpu[4] = {0}; __cpuid(cpu, 0);
-    DWORD vol = 0; GetVolumeInformationA("C:\\", NULL, 0, &vol, NULL, NULL, NULL, 0);
-    char pc[MAX_COMPUTERNAME_LENGTH + 1] = {0}; DWORD sz = sizeof(pc); GetComputerNameA(pc, &sz);
-    sprintf(g_szHWID, "%08X%08X%08X", cpu[0] ^ cpu[1], vol, (pc[0] << 24) | (pc[1] << 16) | (pc[2] << 8) | pc[3]);
-    Log("HWID: %s", g_szHWID);
+    __try {
+        int cpu[4] = {0}; __cpuid(cpu, 0);
+        DWORD vol = 0; GetVolumeInformationA("C:\\", NULL, 0, &vol, NULL, NULL, NULL, 0);
+        char pc[MAX_COMPUTERNAME_LENGTH + 1] = {0}; DWORD sz = sizeof(pc); GetComputerNameA(pc, &sz);
+        sprintf(g_szHWID, "%08X%08X%08X", cpu[0] ^ cpu[1], vol, (pc[0] << 24) | (pc[1] << 16) | (pc[2] << 8) | pc[3]);
+        Log("HWID: %s", g_szHWID);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { strcpy(g_szHWID, "UNKNOWN"); }
 }
 
-bool CheckDebug() { if (IsDebuggerPresent()) return true; BOOL d = FALSE; CheckRemoteDebuggerPresent(GetCurrentProcess(), &d); return d == TRUE; }
-
-// ============================================
-// SCREENSHOT & DISCORD UPLOAD
-// ============================================
-std::string TakeScreenshotAndGetPath() {
-    HWND hwnd = FindWindowA("Valve001", NULL);  // Half-Life window
-    if (!hwnd) hwnd = GetForegroundWindow();
-    if (!hwnd) hwnd = GetDesktopWindow();
-    
-    HDC hdcScreen = GetDC(hwnd);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    
-    RECT rc; GetClientRect(hwnd, &rc);
-    int width = rc.right - rc.left;
-    int height = rc.bottom - rc.top;
-    if (width <= 0 || height <= 0) {
-        width = GetSystemMetrics(SM_CXSCREEN);
-        height = GetSystemMetrics(SM_CYSCREEN);
-        ReleaseDC(hwnd, hdcScreen);
-        hdcScreen = GetDC(NULL);
-    }
-    
-    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, width, height);
-    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBitmap);
-    BitBlt(hdcMem, 0, 0, width, height, hdcScreen, 0, 0, SRCCOPY);
-    SelectObject(hdcMem, hOld);
-    
-    BITMAPINFOHEADER bi = {0};
-    bi.biSize = sizeof(BITMAPINFOHEADER); bi.biWidth = width; bi.biHeight = height;
-    bi.biPlanes = 1; bi.biBitCount = 24; bi.biCompression = BI_RGB;
-    
-    int rowSize = ((width * 3 + 3) & ~3);
-    int dataSize = rowSize * height;
-    unsigned char* pixels = new unsigned char[dataSize];
-    GetDIBits(hdcMem, hBitmap, 0, height, pixels, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
-    
-    SYSTEMTIME st; GetLocalTime(&st);
-    char filename[MAX_PATH];
-    sprintf(filename, "%s\\agtr_ss_%04d%02d%02d_%02d%02d%02d.bmp", 
-        g_szGameDir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    
-    FILE* f = fopen(filename, "wb");
-    if (f) {
-        BITMAPFILEHEADER bf = {0};
-        bf.bfType = 0x4D42; bf.bfSize = sizeof(bf) + sizeof(bi) + dataSize;
-        bf.bfOffBits = sizeof(bf) + sizeof(bi);
-        fwrite(&bf, sizeof(bf), 1, f);
-        fwrite(&bi, sizeof(bi), 1, f);
-        fwrite(pixels, dataSize, 1, f);
-        fclose(f);
-    }
-    
-    delete[] pixels;
-    DeleteObject(hBitmap);
-    DeleteDC(hdcMem);
-    ReleaseDC(hwnd, hdcScreen);
-    
-    return std::string(filename);
-}
-
-// Upload screenshot to Discord via multipart form
-bool UploadScreenshotToDiscord(const std::string& filepath, const char* reason) {
-    FILE* f = fopen(filepath.c_str(), "rb");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long fileSize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    // Max 8MB for Discord
-    if (fileSize > 8 * 1024 * 1024) {
-        fclose(f);
-        return false;
-    }
-    
-    unsigned char* fileData = new unsigned char[fileSize];
-    fread(fileData, 1, fileSize, f);
-    fclose(f);
-    
-    // Multipart form data
-    std::string boundary = "----AGTRBoundary" + std::to_string(GetTickCount());
-    std::string body;
-    
-    // JSON payload
-    char jsonPart[1024];
-    sprintf(jsonPart, "--%s\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n"
-        "{\"embeds\":[{\"title\":\"Screenshot Request\",\"description\":\"%s\",\"color\":3447003,"
-        "\"fields\":[{\"name\":\"Player\",\"value\":\"%s\",\"inline\":true},{\"name\":\"HWID\",\"value\":\"%s\",\"inline\":true}],"
-        "\"image\":{\"url\":\"attachment://screenshot.bmp\"},\"footer\":{\"text\":\"AGTR Anti-Cheat v%s\"}}]}\r\n",
-        boundary.c_str(), reason, JsonEscape(g_szPlayerName).c_str(), g_szHWID, AGTR_VERSION);
-    body += jsonPart;
-    
-    // File part
-    char filePart[256];
-    sprintf(filePart, "--%s\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"screenshot.bmp\"\r\nContent-Type: image/bmp\r\n\r\n", boundary.c_str());
-    body += filePart;
-    body.append((char*)fileData, fileSize);
-    body += "\r\n--" + boundary + "--\r\n";
-    
-    delete[] fileData;
-    
-    // Send
-    HINTERNET hSession = WinHttpOpen(L"AGTR/4.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
-    if (!hSession) return false;
-    
-    HINTERNET hConnect = WinHttpConnect(hSession, DISCORD_WEBHOOK_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (!hConnect) { WinHttpCloseHandle(hSession); return false; }
-    
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", DISCORD_WEBHOOK_PATH, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
-    
-    wchar_t headers[256];
-    swprintf(headers, 256, L"Content-Type: multipart/form-data; boundary=%hs\r\n", boundary.c_str());
-    
-    BOOL result = WinHttpSendRequest(hRequest, headers, -1, (LPVOID)body.c_str(), body.size(), body.size(), 0);
-    if (result) WinHttpReceiveResponse(hRequest, NULL);
-    
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    
-    Log("Screenshot uploaded to Discord: %s", result ? "OK" : "FAIL");
-    return result == TRUE;
+bool CheckDebug() { 
+    __try {
+        if (IsDebuggerPresent()) return true; 
+        BOOL d = FALSE; 
+        CheckRemoteDebuggerPresent(GetCurrentProcess(), &d); 
+        return d == TRUE; 
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 // ============================================
-// MEMORY SCANNING
-// ============================================
-bool PatternMatch(const unsigned char* data, const unsigned char* pattern, const char* mask, int len) {
-    for (int i = 0; i < len; i++) if (mask[i] == 'x' && data[i] != pattern[i]) return false;
-    return true;
-}
-
-int ScanMemory() {
-    int found = 0;
-    HANDLE hProcess = GetCurrentProcess();
-    HMODULE hMods[256]; DWORD cbNeeded;
-    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-        int modCount = cbNeeded / sizeof(HMODULE);
-        for (int i = 0; i < modCount && i < 256; i++) {
-            MODULEINFO modInfo;
-            if (GetModuleInformation(hProcess, hMods[i], &modInfo, sizeof(modInfo))) {
-                unsigned char* base = (unsigned char*)modInfo.lpBaseOfDll;
-                DWORD size = modInfo.SizeOfImage;
-                for (int s = 0; g_MemSigs[s].name != NULL; s++) {
-                    for (DWORD offset = 0; offset < size - g_MemSigs[s].length; offset++) {
-                        __try {
-                            if (PatternMatch(base + offset, g_MemSigs[s].pattern, g_MemSigs[s].mask, g_MemSigs[s].length)) {
-                                Log("!!! MEMORY: %s", g_MemSigs[s].name);
-                                found++;
-                            }
-                        } __except(EXCEPTION_EXECUTE_HANDLER) {}
-                    }
-                }
-            }
-        }
-    }
-    g_iMemorySus = found;
-    return found;
-}
-
-// ============================================
-// DLL INJECTION DETECTION
-// ============================================
-
-// Bilinen guvenli DLL'ler (Half-Life, Steam, vb.)
-bool IsKnownSafeDLL(const std::string& fn) {
-    // Sistem klasorleri
-    if (fn.find("windows") != std::string::npos) return true;
-    if (fn.find("system32") != std::string::npos) return true;
-    if (fn.find("syswow64") != std::string::npos) return true;
-    if (fn.find("winsxs") != std::string::npos) return true;
-    
-    // Bilinen guvenli dosya adlari
-    const char* safeDlls[] = {
-        // Half-Life / GoldSrc
-        "hw.dll", "sw.dll", "client.dll", "gameui.dll", "vgui.dll", "vgui2.dll",
-        "filesystem_stdio.dll", "demoplayer.dll", "core.dll", "serverbrowser.dll",
-        "tier0.dll", "vstdlib.dll", "tier0_s.dll", "vstdlib_s.dll",
-        // Steam
-        "steamclient.dll", "steam_api.dll", "gameoverlayrenderer.dll", "crashhandler.dll",
-        // Media / CEF
-        "avcodec-53.dll", "avformat-53.dll", "avutil-51.dll", "chromehtml.dll",
-        "libcef.dll", "icudt.dll",
-        // Audio
-        "mss32.dll", "mssmp3.asi", "mssvoice.asi", "dsound.dll",
-        // SDL / Input
-        "sdl2.dll", "dinput.dll", "dinput8.dll", "xinput1_4.dll",
-        // OpenGL / Graphics  
-        "opengl32.dll", "glu32.dll", "ddraw.dll",
-        // NVIDIA
-        "nvoglv32.dll", "nvapi.dll", "nvwgf2um.dll",
-        // AMD
-        "amdxc32.dll", "atiumdag.dll",
-        NULL
-    };
-    
-    for (int i = 0; safeDlls[i]; i++) {
-        if (fn.find(safeDlls[i]) != std::string::npos) return true;
-    }
-    
-    // Half-Life klasorundeyse guvenli say
-    if (fn.find("half-life") != std::string::npos) return true;
-    if (fn.find("steam") != std::string::npos) return true;
-    
-    return false;
-}
-
-std::set<std::string> GetCurrentModules() {
-    std::set<std::string> modules;
-    HANDLE hProcess = GetCurrentProcess();
-    HMODULE hMods[512]; DWORD cbNeeded;
-    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-        int count = cbNeeded / sizeof(HMODULE);
-        for (int i = 0; i < count && i < 512; i++) {
-            char modName[MAX_PATH];
-            if (GetModuleFileNameA(hMods[i], modName, MAX_PATH)) modules.insert(ToLower(modName));
-        }
-    }
-    return modules;
-}
-
-int CheckNewDLLs() {
-    int newCount = 0;
-    std::set<std::string> current = GetCurrentModules();
-    for (const auto& mod : current) {
-        if (g_LoadedDLLs.find(mod) == g_LoadedDLLs.end()) {
-            g_LoadedDLLs.insert(mod);
-            
-            std::string fn = mod;
-            size_t pos = fn.rfind('\\');
-            if (pos != std::string::npos) fn = fn.substr(pos + 1);
-            
-            // Guvenli DLL mi kontrol et
-            if (IsKnownSafeDLL(mod)) {
-                continue;  // Guvenli, atla
-            }
-            
-            // Bilinmeyen DLL - SUPHELI!
-            Log("!!! INJECTION: %s", mod.c_str());
-            
-            // Discord bildirim (sadece supheli DLL'ler icin)
-            char fields[512];
-            sprintf(fields, "{\"name\":\"DLL\",\"value\":\"%s\",\"inline\":false},{\"name\":\"HWID\",\"value\":\"%s\",\"inline\":true}", 
-                JsonEscape(fn).c_str(), g_szHWID);
-            SendDiscordWebhook("Suspicious DLL Detected", "Bilinmeyen DLL yuklendi!", 15158332, fields);
-            
-            newCount++;
-            g_iInjectionCount++;
-        }
-    }
-    return newCount;
-}
-
-DWORD WINAPI DllWatchThread(LPVOID) {
-    g_LoadedDLLs = GetCurrentModules();
-    while (g_bRunning) { Sleep(AGTR_DLL_CHECK_INTERVAL); CheckNewDLLs(); }
-    return 0;
-}
-
-// ============================================
-// COMMAND LISTENER (for screenshot request)
-// ============================================
-DWORD WINAPI CommandThread(LPVOID) {
-    while (g_bRunning) {
-        // Check for screenshot request file
-        std::string cmdFile = g_szGameDir + "\\agtr_command.txt";
-        FILE* f = fopen(cmdFile.c_str(), "r");
-        if (f) {
-            char cmd[256] = {0};
-            fgets(cmd, sizeof(cmd), f);
-            fclose(f);
-            DeleteFileA(cmdFile.c_str());
-            
-            if (strstr(cmd, "screenshot")) {
-                Log("Screenshot requested by admin");
-                std::string ssPath = TakeScreenshotAndGetPath();
-                if (!ssPath.empty()) {
-                    UploadScreenshotToDiscord(ssPath, "Admin Request");
-                }
-            }
-        }
-        Sleep(1000);
-    }
-    return 0;
-}
-
-// ============================================
-// NORMAL SCANNING
+// SCANNING
 // ============================================
 int ScanProc() {
     int sus = 0;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
-    PROCESSENTRY32 pe; pe.dwSize = sizeof(pe);
-    if (Process32First(snap, &pe)) {
-        do {
-            std::string n = ToLower(pe.szExeFile);
-            for (int i = 0; g_SusProc[i]; i++) {
-                if (n == g_SusProc[i]) { Log("SUS PROC: %s", pe.szExeFile); sus++; break; }
-            }
-        } while (Process32Next(snap, &pe));
-    }
-    CloseHandle(snap);
+    __try {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return 0;
+        PROCESSENTRY32 pe; pe.dwSize = sizeof(pe);
+        if (Process32First(snap, &pe)) {
+            do {
+                std::string n = ToLower(pe.szExeFile);
+                for (int i = 0; g_SusProc[i]; i++) {
+                    if (n == g_SusProc[i]) { Log("SUS PROC: %s", pe.szExeFile); sus++; break; }
+                }
+            } while (Process32Next(snap, &pe));
+        }
+        CloseHandle(snap);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
     return sus;
 }
 
 static int g_WinSus = 0;
 BOOL CALLBACK EnumWinProc(HWND hwnd, LPARAM) {
-    char t[256] = {0}; GetWindowTextA(hwnd, t, 256);
-    if (strlen(t) > 0) {
-        std::string tl = ToLower(t);
-        for (int i = 0; g_SusWin[i]; i++) {
-            if (tl.find(g_SusWin[i]) != std::string::npos) { Log("SUS WIN: %s", t); g_WinSus++; break; }
+    __try {
+        char t[256] = {0}; GetWindowTextA(hwnd, t, 256);
+        if (strlen(t) > 0) {
+            std::string tl = ToLower(t);
+            for (int i = 0; g_SusWin[i]; i++) {
+                if (tl.find(g_SusWin[i]) != std::string::npos) { g_WinSus++; break; }
+            }
         }
-    }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
     return TRUE;
 }
 int ScanWin() { g_WinSus = 0; EnumWindows(EnumWinProc, 0); return g_WinSus; }
 
 void ScanDir(const std::string& dir, const std::string& pat) {
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA((dir + "\\" + pat).c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            std::string fp = dir + "\\" + fd.cFileName;
-            std::string shortHash, fullHash;
-            if (GetFileHashes(fp, shortHash, fullHash)) {
-                g_Hashes[ToLower(fd.cFileName)] = {shortHash, fullHash};
+    __try {
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA((dir + "\\" + pat).c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                std::string fp = dir + "\\" + fd.cFileName;
+                std::string shortHash, fullHash;
+                if (GetFileHashes(fp, shortHash, fullHash)) {
+                    g_Hashes[ToLower(fd.cFileName)] = {shortHash, fullHash};
+                }
             }
-        }
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void ScanAllFiles() {
     g_Hashes.clear();
-    ScanDir(g_szGameDir, "*.dll"); ScanDir(g_szGameDir, "*.exe");
-    ScanDir(g_szValveDir, "*.dll"); ScanDir(g_szValveDir + "\\cl_dlls", "*.dll");
-    ScanDir(g_szValveDir + "\\dlls", "*.dll"); ScanDir(g_szValveDir + "\\addons", "*.dll");
-    ScanDir(g_szGameDir + "\\valve_hd", "*.dll"); ScanDir(g_szGameDir + "\\valve_hd\\cl_dlls", "*.dll");
-    ScanDir(g_szGameDir + "\\ag", "*.dll"); ScanDir(g_szGameDir + "\\ag\\cl_dlls", "*.dll");
-    ScanDir(g_szGameDir + "\\ag\\dlls", "*.dll"); ScanDir(g_szGameDir + "\\ag\\addons", "*.dll");
-    ScanDir(g_szGameDir + "\\cstrike", "*.dll"); ScanDir(g_szGameDir + "\\cstrike\\cl_dlls", "*.dll");
+    ScanDir(g_szGameDir, "*.dll"); 
+    ScanDir(g_szGameDir, "*.exe");
+    ScanDir(g_szValveDir, "*.dll"); 
+    ScanDir(g_szValveDir + "\\cl_dlls", "*.dll");
+    ScanDir(g_szValveDir + "\\dlls", "*.dll"); 
+    ScanDir(g_szValveDir + "\\addons", "*.dll");
+    ScanDir(g_szGameDir + "\\valve_hd", "*.dll");
+    ScanDir(g_szGameDir + "\\valve_hd\\cl_dlls", "*.dll");
+    ScanDir(g_szGameDir + "\\ag", "*.dll"); 
+    ScanDir(g_szGameDir + "\\ag\\cl_dlls", "*.dll");
+    ScanDir(g_szGameDir + "\\ag\\dlls", "*.dll"); 
+    ScanDir(g_szGameDir + "\\ag\\addons", "*.dll");
+    ScanDir(g_szGameDir + "\\cstrike", "*.dll"); 
+    ScanDir(g_szGameDir + "\\cstrike\\cl_dlls", "*.dll");
     Log("Total hashed: %d files", (int)g_Hashes.size());
 }
 
@@ -629,143 +309,188 @@ int ScanFiles() {
     int sus = 0;
     for (auto& p : g_Hashes) {
         for (int i = 0; g_SusKey[i]; i++) {
-            if (p.first.find(g_SusKey[i]) != std::string::npos) { Log("SUS FILE: %s", p.first.c_str()); sus++; break; }
+            if (p.first.find(g_SusKey[i]) != std::string::npos) { 
+                Log("SUS FILE: %s", p.first.c_str()); 
+                sus++; 
+                break; 
+            }
         }
     }
     return sus;
 }
 
 void WriteResult() {
-    char p[MAX_PATH]; strcpy(p, g_szGameDir.c_str()); strcat(p, "\\agtr_result.txt");
-    FILE* f = fopen(p, "w");
-    if (f) {
-        fprintf(f, "HWID=%s\nPASSED=%d\nSUSPICIOUS=%d\nMEMORY=%d\nINJECTIONS=%d\nVERSION=%s\n",
-            g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, g_iMemorySus, g_iInjectionCount, AGTR_VERSION);
-        fclose(f);
-    }
+    __try {
+        std::string path = g_szDataDir + "\\agtr_result.txt";
+        FILE* f = fopen(path.c_str(), "w");
+        if (f) {
+            fprintf(f, "HWID=%s\nPASSED=%d\nSUSPICIOUS=%d\nVERSION=%s\n",
+                g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
+            fclose(f);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void WriteHashes() {
-    char p[MAX_PATH]; strcpy(p, g_szGameDir.c_str()); strcat(p, "\\agtr_hashes.txt");
-    FILE* f = fopen(p, "w");
-    if (f) {
-        fprintf(f, "# AGTR v%s | HWID: %s\n", AGTR_VERSION, g_szHWID);
-        for (auto& h : g_Hashes) fprintf(f, "%s,%s,%s\n", h.second.shortHash.c_str(), h.second.fullHash.c_str(), h.first.c_str());
-        fclose(f);
-    }
+    __try {
+        std::string path = g_szDataDir + "\\agtr_hashes.txt";
+        FILE* f = fopen(path.c_str(), "w");
+        if (f) {
+            fprintf(f, "# AGTR v%s | HWID: %s\n", AGTR_VERSION, g_szHWID);
+            for (auto& h : g_Hashes) {
+                fprintf(f, "%s,%s,%s\n", h.second.shortHash.c_str(), h.second.fullHash.c_str(), h.first.c_str());
+            }
+            fclose(f);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void SetupAutoExec() {
-    std::string ucPath = g_szValveDir + "\\userconfig.cfg";
-    FILE* f = fopen(ucPath.c_str(), "r");
-    std::string content;
-    if (f) { char buf[1024]; while (fgets(buf, sizeof(buf), f)) content += buf; fclose(f); }
-    if (content.find("agtr_send.cfg") != std::string::npos) return;
-    f = fopen(ucPath.c_str(), "a");
-    if (f) { fprintf(f, "\nexec agtr_send.cfg\n"); fclose(f); Log("Auto-exec configured"); }
-    
-    std::string agPath = g_szGameDir + "\\ag\\userconfig.cfg";
-    f = fopen(agPath.c_str(), "r"); content.clear();
-    if (f) { char buf[1024]; while (fgets(buf, sizeof(buf), f)) content += buf; fclose(f); }
-    if (content.find("agtr_send.cfg") == std::string::npos) {
-        f = fopen(agPath.c_str(), "a");
-        if (f) { fprintf(f, "\nexec agtr_send.cfg\n"); fclose(f); }
-    }
+    __try {
+        std::string ucPath = g_szValveDir + "\\userconfig.cfg";
+        FILE* f = fopen(ucPath.c_str(), "r");
+        std::string content;
+        if (f) { char buf[1024]; while (fgets(buf, sizeof(buf), f)) content += buf; fclose(f); }
+        if (content.find("agtr_send.cfg") != std::string::npos) return;
+        f = fopen(ucPath.c_str(), "a");
+        if (f) { fprintf(f, "\nexec agtr_send.cfg\n"); fclose(f); Log("Auto-exec configured"); }
+        
+        std::string agPath = g_szGameDir + "\\ag\\userconfig.cfg";
+        f = fopen(agPath.c_str(), "r"); content.clear();
+        if (f) { char buf[1024]; while (fgets(buf, sizeof(buf), f)) content += buf; fclose(f); }
+        if (content.find("agtr_send.cfg") == std::string::npos) {
+            f = fopen(agPath.c_str(), "a");
+            if (f) { fprintf(f, "\nexec agtr_send.cfg\n"); fclose(f); }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-// ============================================
-// OPTIMIZED SEND CFG - Overflow Prevention
-// ============================================
 void WriteSendCfg() {
-    char p[MAX_PATH]; strcpy(p, g_szGameDir.c_str()); strcat(p, "\\agtr_send.cfg");
-    FILE* f = fopen(p, "w");
-    if (!f) return;
-    
-    fprintf(f, "// AGTR v%s\n\n", AGTR_VERSION);
-    
-    // Status (encrypted)
-    char statusData[256];
-    sprintf(statusData, "%s|%d|%d|%d|%d|%s", g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, g_iMemorySus, g_iInjectionCount, AGTR_VERSION);
-    fprintf(f, "agtr_enc_status %s\n", Encrypt(statusData).c_str());
-    fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");  // 10 wait
-    
-    // Hash'leri grupla - her 5 hash'te bir wait
-    int count = 0;
-    for (auto& h : g_Hashes) {
-        std::string hashData = h.second.shortHash + "|" + h.first;
-        fprintf(f, "agtr_enc_hash %s\n", Encrypt(hashData).c_str());
-        count++;
-        if (count % 5 == 0) {
-            fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
+    __try {
+        // CFG icerigini olustur
+        std::string content = "// AGTR v";
+        content += AGTR_VERSION;
+        content += "\n\n";
+        
+        // Status
+        char statusData[256];
+        sprintf(statusData, "%s|%d|%d|0|0|%s", g_szHWID, g_bPassed ? 1 : 0, g_iSusCount, AGTR_VERSION);
+        content += "agtr_enc_status ";
+        content += Encrypt(statusData);
+        content += "\n";
+        content += "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n";
+        
+        // Hashes
+        int count = 0;
+        for (auto& h : g_Hashes) {
+            std::string hashData = h.second.shortHash + "|" + h.first;
+            content += "agtr_enc_hash ";
+            content += Encrypt(hashData);
+            content += "\n";
+            count++;
+            if (count % 5 == 0) {
+                content += "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n";
+            }
         }
-    }
-    
-    fprintf(f, "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n");
-    fprintf(f, "agtr_enc_done %s\n", Encrypt(std::to_string(g_Hashes.size())).c_str());
-    
-    fclose(f);
-    Log("CFG written: %d hashes", (int)g_Hashes.size());
+        
+        content += "wait;wait;wait;wait;wait;wait;wait;wait;wait;wait\n";
+        content += "agtr_enc_done ";
+        content += Encrypt(std::to_string(g_Hashes.size()));
+        content += "\n";
+        
+        // Hem valve hem ag klasorune yaz
+        FILE* f = fopen((g_szValveDir + "\\agtr_send.cfg").c_str(), "w");
+        if (f) { fputs(content.c_str(), f); fclose(f); }
+        
+        f = fopen((g_szGameDir + "\\ag\\agtr_send.cfg").c_str(), "w");
+        if (f) { fputs(content.c_str(), f); fclose(f); }
+        
+        Log("CFG written: %d hashes", (int)g_Hashes.size());
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void DoScan() {
-    Log("=== SCAN ===");
-    g_iSusCount = 0;
-    g_bDebugger = CheckDebug();
-    if (g_bDebugger) { g_iSusCount += 10; Log("!!! DEBUGGER"); }
-    g_iSusCount += ScanProc();
-    g_iSusCount += ScanWin();
-    g_iSusCount += ScanFiles();
-    
-    static int memCounter = 0;
-    if (memCounter++ % 5 == 0) {
-        int hits = ScanMemory();
-        if (hits > 0) g_iSusCount += hits * 5;
-    }
-    if (g_iInjectionCount > 0) g_iSusCount += g_iInjectionCount * 3;
-    
-    g_bPassed = (g_iSusCount == 0);
-    Log("Result: %s | Sus: %d", g_bPassed ? "CLEAN" : "SUS", g_iSusCount);
-    WriteResult();
-    WriteSendCfg();
+    __try {
+        Log("=== SCAN ===");
+        g_iSusCount = 0;
+        g_bDebugger = CheckDebug();
+        if (g_bDebugger) { g_iSusCount += 10; Log("!!! DEBUGGER"); }
+        g_iSusCount += ScanProc();
+        g_iSusCount += ScanWin();
+        g_iSusCount += ScanFiles();
+        g_bPassed = (g_iSusCount == 0);
+        Log("Result: %s | Sus: %d", g_bPassed ? "CLEAN" : "SUS", g_iSusCount);
+        WriteResult();
+        WriteSendCfg();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { Log("DoScan exception"); }
 }
 
 DWORD WINAPI ScanThread(LPVOID) {
-    Sleep(AGTR_INITIAL_DELAY);
-    Log("AGTR v%s Started", AGTR_VERSION);
+    Sleep(AGTR_INITIAL_DELAY);  // 8 saniye bekle
     
-    GenHWID();
-    SetupAutoExec();
-    ScanAllFiles();
-    WriteHashes();
-    WriteSendCfg();
+    __try {
+        Log("AGTR v%s Started", AGTR_VERSION);
+        GenHWID();
+        SetupAutoExec();
+        ScanAllFiles();
+        WriteHashes();
+        WriteSendCfg();
+        
+        while (g_bRunning) {
+            DoScan();
+            for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) Sleep(100);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) { Log("ScanThread exception"); }
     
-    while (g_bRunning) {
-        DoScan();
-        for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) Sleep(100);
-    }
     return 0;
 }
 
-void Init() {
-    char p[MAX_PATH]; GetModuleFileNameA(NULL, p, MAX_PATH);
-    char* s = strrchr(p, '\\'); if (s) *s = 0;
-    g_szGameDir = p; g_szValveDir = g_szGameDir + "\\valve";
-    Log("=== AGTR v%s Init ===", AGTR_VERSION);
+bool g_bThreadStarted = false;
+
+void CreateDataDir() {
+    // Half-Life/.agtr klasoru olustur (gizli)
+    g_szDataDir = g_szGameDir + "\\.agtr";
+    CreateDirectoryA(g_szDataDir.c_str(), NULL);
+    // Klasoru gizle
+    SetFileAttributesA(g_szDataDir.c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+}
+
+void StartScanThread() {
+    if (g_bThreadStarted) return;  // Zaten baslamis
+    g_bThreadStarted = true;
     g_bRunning = true;
     g_hThread = CreateThread(NULL, 0, ScanThread, NULL, 0, NULL);
-    g_hDllWatchThread = CreateThread(NULL, 0, DllWatchThread, NULL, 0, NULL);
-    g_hCommandThread = CreateThread(NULL, 0, CommandThread, NULL, 0, NULL);
+}
+
+void Init() {
+    __try {
+        char p[MAX_PATH]; GetModuleFileNameA(NULL, p, MAX_PATH);
+        char* s = strrchr(p, '\\'); if (s) *s = 0;
+        g_szGameDir = p; 
+        g_szValveDir = g_szGameDir + "\\valve";
+        CreateDataDir();  // Gizli klasor olustur
+        // Thread burada BASLATILMIYOR - DirectInputCreate'de baslatilacak
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void Shutdown() {
     g_bRunning = false;
-    if (g_hThread) { WaitForSingleObject(g_hThread, 3000); CloseHandle(g_hThread); }
-    if (g_hDllWatchThread) { WaitForSingleObject(g_hDllWatchThread, 3000); CloseHandle(g_hDllWatchThread); }
-    if (g_hCommandThread) { WaitForSingleObject(g_hCommandThread, 3000); CloseHandle(g_hCommandThread); }
+    if (g_hThread) { 
+        WaitForSingleObject(g_hThread, 3000); 
+        CloseHandle(g_hThread); 
+        g_hThread = NULL;
+    }
 }
 
 BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) { DisableThreadLibraryCalls(hMod); LoadOriginal(); Init(); }
-    else if (reason == DLL_PROCESS_DETACH) { Shutdown(); if (g_hOriginal) FreeLibrary(g_hOriginal); }
+    if (reason == DLL_PROCESS_ATTACH) { 
+        DisableThreadLibraryCalls(hMod); 
+        LoadOriginal(); 
+        Init(); 
+    }
+    else if (reason == DLL_PROCESS_DETACH) { 
+        Shutdown(); 
+        if (g_hOriginal) { FreeLibrary(g_hOriginal); g_hOriginal = NULL; }
+    }
     return TRUE;
 }

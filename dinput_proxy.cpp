@@ -16,7 +16,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "winhttp.lib")
 
-#define AGTR_VERSION "10.2"
+#define AGTR_VERSION "10.4"
 #define AGTR_HASH_LENGTH 8
 #define AGTR_SCAN_INTERVAL 120000   // 2 dakika
 #define AGTR_INITIAL_DELAY 10000    // 10 saniye
@@ -556,28 +556,50 @@ int CheckSusFiles() {
 // ============================================
 std::string EscapeJson(const std::string& s) {
     std::string out;
-    for (unsigned char c : s) {
-        if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else if (c == '\b') out += "\\b";
-        else if (c == '\f') out += "\\f";
-        else if (c < 0x20) {
-            // Kontrol karakterleri - hex olarak escape et
-            char buf[8];
-            sprintf(buf, "\\u%04x", c);
-            out += buf;
+    out.reserve(s.length() * 2); // Pre-allocate
+    
+    for (size_t i = 0; i < s.length(); i++) {
+        unsigned char c = (unsigned char)s[i];
+        
+        // Standard JSON escape sequences
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    // Control characters -> \u00XX
+                    char buf[8];
+                    sprintf(buf, "\\u%04x", c);
+                    out += buf;
+                }
+                else if (c < 0x80) {
+                    // ASCII - olduğu gibi
+                    out += c;
+                }
+                else {
+                    // UTF-8 multi-byte - olduğu gibi bırak (valid UTF-8 varsayımı)
+                    // Türkçe karakterler burada (ş, ğ, ü, ö, ç, ı, İ, Ş, Ğ, Ü, Ö, Ç)
+                    out += c;
+                }
+                break;
         }
-        else if (c >= 0x80) {
-            // Non-ASCII - olduğu gibi bırak (UTF-8 varsayımı)
-            // Veya güvenli için atla
-            out += c;
-        }
-        else out += c;
     }
     return out;
+}
+
+// Güvenli string kopyalama (NULL ve boyut kontrolü ile)
+std::string SafeString(const char* s, size_t maxLen = 256) {
+    if (!s || !s[0]) return "";
+    std::string result;
+    for (size_t i = 0; i < maxLen && s[i]; i++) {
+        result += s[i];
+    }
+    return result;
 }
 
 std::string BuildJson() {
@@ -701,7 +723,7 @@ std::string ComputeSignature(const std::string& data) {
 // HTTP POST
 // ============================================
 bool SendToAPI(const std::string& jsonData, const std::string& signature) {
-    HINTERNET hSession = WinHttpOpen(L"AGTR/10.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    HINTERNET hSession = WinHttpOpen(L"AGTR/10.2", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) { Log("HTTP: Session failed"); return false; }
     
     HINTERNET hConnect = WinHttpConnect(hSession, API_HOST, API_PORT, 0);
@@ -724,6 +746,42 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
             DWORD statusSize = sizeof(statusCode);
             WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, NULL, &statusCode, &statusSize, NULL);
             Log("HTTP: Response %d", statusCode);
+            
+            // Response body'yi oku
+            char responseBody[4096] = {0};
+            DWORD bytesRead = 0;
+            WinHttpReadData(hRequest, responseBody, sizeof(responseBody) - 1, &bytesRead);
+            
+            if (bytesRead > 0) {
+                responseBody[bytesRead] = 0;
+                Log("HTTP Response: %s", responseBody);
+                
+                // "action":"kick" kontrolü
+                if (strstr(responseBody, "\"action\":\"kick\"")) {
+                    Log("!!! KICK ACTION RECEIVED !!!");
+                    
+                    // Reason'ı bul
+                    char* reasonStart = strstr(responseBody, "\"reason\":\"");
+                    if (reasonStart) {
+                        reasonStart += 10;
+                        char* reasonEnd = strchr(reasonStart, '"');
+                        if (reasonEnd) {
+                            char reason[256] = {0};
+                            strncpy(reason, reasonStart, min((int)(reasonEnd - reasonStart), 255));
+                            Log("Kick reason: %s", reason);
+                            
+                            // Mesaj göster ve oyunu kapat
+                            char msg[512];
+                            sprintf(msg, "AGTR Anti-Cheat\n\n%s\n\nYou have been disconnected.", reason);
+                            MessageBoxA(NULL, msg, "AGTR Anti-Cheat", MB_OK | MB_ICONERROR);
+                            
+                            // Oyunu kapat
+                            ExitProcess(0);
+                        }
+                    }
+                }
+            }
+            
             result = (statusCode == 200);
         }
     }

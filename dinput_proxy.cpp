@@ -346,65 +346,11 @@ int ScanModules() {
 }
 
 // ============================================
-// MEMORY SCANNER
+// MEMORY SCANNER - DISABLED (causes crash)
 // ============================================
 int ScanMemory() {
-    int susCount = 0;
-    
-    HANDLE hProcess = GetCurrentProcess();
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    
-    MEMORY_BASIC_INFORMATION mbi;
-    BYTE* addr = (BYTE*)si.lpMinimumApplicationAddress;
-    
-    while (addr < si.lpMaximumApplicationAddress) {
-        if (VirtualQuery(addr, &mbi, sizeof(mbi))) {
-            if (mbi.State == MEM_COMMIT && 
-                (mbi.Protect == PAGE_EXECUTE_READWRITE || mbi.Protect == PAGE_READWRITE)) {
-                
-                // Sadece makul boyuttaki bölgeleri tara (< 10MB)
-                if (mbi.RegionSize < 10 * 1024 * 1024) {
-                    std::vector<BYTE> buffer(mbi.RegionSize);
-                    SIZE_T bytesRead;
-                    
-                    if (ReadProcessMemory(hProcess, mbi.BaseAddress, buffer.data(), mbi.RegionSize, &bytesRead)) {
-                        // Signature ara
-                        for (int s = 0; MEMORY_SIGS[s].name; s++) {
-                            for (SIZE_T i = 0; i < bytesRead - MEMORY_SIGS[s].length; i++) {
-                                bool match = true;
-                                for (int j = 0; j < MEMORY_SIGS[s].length; j++) {
-                                    if (MEMORY_SIGS[s].pattern[j] != 0x00 && 
-                                        buffer[i + j] != MEMORY_SIGS[s].pattern[j]) {
-                                        match = false;
-                                        break;
-                                    }
-                                }
-                                if (match) {
-                                    SuspiciousItem item;
-                                    item.type = "memory";
-                                    item.name = MEMORY_SIGS[s].name;
-                                    char details[128];
-                                    sprintf(details, "Found at 0x%p", (void*)((BYTE*)mbi.BaseAddress + i));
-                                    item.details = details;
-                                    
-                                    g_SuspiciousItems.push_back(item);
-                                    susCount++;
-                                    LogToFile("SUSPICIOUS MEMORY: %s at 0x%p", MEMORY_SIGS[s].name, (void*)((BYTE*)mbi.BaseAddress + i));
-                                    break; // Bir kez bulduysa yeter
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            addr += mbi.RegionSize;
-        } else {
-            addr += 4096;
-        }
-    }
-    
-    return susCount;
+    // Disabled - was causing game crashes
+    return 0;
 }
 
 // ============================================

@@ -1,7 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
-#include <objbase.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -25,68 +24,40 @@
 // ============================================
 HMODULE g_hOriginalDInput = NULL;
 
-typedef HRESULT(WINAPI* DirectInputCreateA_t)(HINSTANCE, DWORD, LPVOID*, IUnknown*);
-typedef HRESULT(WINAPI* DirectInputCreateW_t)(HINSTANCE, DWORD, LPVOID*, IUnknown*);
-typedef HRESULT(WINAPI* DirectInputCreateEx_t)(HINSTANCE, DWORD, REFIID, LPVOID*, IUnknown*);
-typedef HRESULT(WINAPI* DllCanUnloadNow_t)();
-typedef HRESULT(WINAPI* DllGetClassObject_t)(REFCLSID, REFIID, LPVOID*);
-typedef HRESULT(WINAPI* DllRegisterServer_t)();
-typedef HRESULT(WINAPI* DllUnregisterServer_t)();
+typedef HRESULT(WINAPI* pfnDirectInputCreateA)(HINSTANCE, DWORD, LPVOID*, LPVOID);
+typedef HRESULT(WINAPI* pfnDirectInputCreateW)(HINSTANCE, DWORD, LPVOID*, LPVOID);
+typedef HRESULT(WINAPI* pfnDirectInputCreateEx)(HINSTANCE, DWORD, REFGUID, LPVOID*, LPVOID);
 
-DirectInputCreateA_t pDirectInputCreateA = NULL;
-DirectInputCreateW_t pDirectInputCreateW = NULL;
-DirectInputCreateEx_t pDirectInputCreateEx = NULL;
-DllCanUnloadNow_t pDllCanUnloadNow = NULL;
-DllGetClassObject_t pDllGetClassObject = NULL;
-DllRegisterServer_t pDllRegisterServer = NULL;
-DllUnregisterServer_t pDllUnregisterServer = NULL;
+pfnDirectInputCreateA oDirectInputCreateA = NULL;
+pfnDirectInputCreateW oDirectInputCreateW = NULL;
+pfnDirectInputCreateEx oDirectInputCreateEx = NULL;
 
 bool LoadOriginalDInput() {
     if (g_hOriginalDInput) return true;
     char sysPath[MAX_PATH];
     GetSystemDirectoryA(sysPath, MAX_PATH);
-    strcat_s(sysPath, "\\dinput.dll");
+    strcat(sysPath, "\\dinput.dll");
     g_hOriginalDInput = LoadLibraryA(sysPath);
     if (!g_hOriginalDInput) return false;
-    pDirectInputCreateA = (DirectInputCreateA_t)GetProcAddress(g_hOriginalDInput, "DirectInputCreateA");
-    pDirectInputCreateW = (DirectInputCreateW_t)GetProcAddress(g_hOriginalDInput, "DirectInputCreateW");
-    pDirectInputCreateEx = (DirectInputCreateEx_t)GetProcAddress(g_hOriginalDInput, "DirectInputCreateEx");
-    pDllCanUnloadNow = (DllCanUnloadNow_t)GetProcAddress(g_hOriginalDInput, "DllCanUnloadNow");
-    pDllGetClassObject = (DllGetClassObject_t)GetProcAddress(g_hOriginalDInput, "DllGetClassObject");
-    pDllRegisterServer = (DllRegisterServer_t)GetProcAddress(g_hOriginalDInput, "DllRegisterServer");
-    pDllUnregisterServer = (DllUnregisterServer_t)GetProcAddress(g_hOriginalDInput, "DllUnregisterServer");
+    oDirectInputCreateA = (pfnDirectInputCreateA)GetProcAddress(g_hOriginalDInput, "DirectInputCreateA");
+    oDirectInputCreateW = (pfnDirectInputCreateW)GetProcAddress(g_hOriginalDInput, "DirectInputCreateW");
+    oDirectInputCreateEx = (pfnDirectInputCreateEx)GetProcAddress(g_hOriginalDInput, "DirectInputCreateEx");
     return true;
 }
 
 extern "C" {
-__declspec(dllexport) HRESULT WINAPI DirectInputCreateA(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, IUnknown* punkOuter) {
-    if (!LoadOriginalDInput() || !pDirectInputCreateA) return E_FAIL;
-    return pDirectInputCreateA(hinst, dwVersion, ppDI, punkOuter);
-}
-__declspec(dllexport) HRESULT WINAPI DirectInputCreateW(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, IUnknown* punkOuter) {
-    if (!LoadOriginalDInput() || !pDirectInputCreateW) return E_FAIL;
-    return pDirectInputCreateW(hinst, dwVersion, ppDI, punkOuter);
-}
-__declspec(dllexport) HRESULT WINAPI DirectInputCreateEx(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPVOID* ppvOut, IUnknown* punkOuter) {
-    if (!LoadOriginalDInput() || !pDirectInputCreateEx) return E_FAIL;
-    return pDirectInputCreateEx(hinst, dwVersion, riidltf, ppvOut, punkOuter);
-}
-__declspec(dllexport) HRESULT WINAPI DllCanUnloadNow() {
-    if (!LoadOriginalDInput() || !pDllCanUnloadNow) return S_FALSE;
-    return pDllCanUnloadNow();
-}
-__declspec(dllexport) HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
-    if (!LoadOriginalDInput() || !pDllGetClassObject) return E_FAIL;
-    return pDllGetClassObject(rclsid, riid, ppv);
-}
-__declspec(dllexport) HRESULT WINAPI DllRegisterServer() {
-    if (!LoadOriginalDInput() || !pDllRegisterServer) return E_FAIL;
-    return pDllRegisterServer();
-}
-__declspec(dllexport) HRESULT WINAPI DllUnregisterServer() {
-    if (!LoadOriginalDInput() || !pDllUnregisterServer) return E_FAIL;
-    return pDllUnregisterServer();
-}
+    __declspec(dllexport) HRESULT WINAPI DirectInputCreateA(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
+        if (!LoadOriginalDInput() || !oDirectInputCreateA) return E_FAIL;
+        return oDirectInputCreateA(hinst, dwVersion, ppDI, punkOuter);
+    }
+    __declspec(dllexport) HRESULT WINAPI DirectInputCreateW(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
+        if (!LoadOriginalDInput() || !oDirectInputCreateW) return E_FAIL;
+        return oDirectInputCreateW(hinst, dwVersion, ppDI, punkOuter);
+    }
+    __declspec(dllexport) HRESULT WINAPI DirectInputCreateEx(HINSTANCE hinst, DWORD dwVersion, REFGUID riid, LPVOID* ppvOut, LPVOID punkOuter) {
+        if (!LoadOriginalDInput() || !oDirectInputCreateEx) return E_FAIL;
+        return oDirectInputCreateEx(hinst, dwVersion, riid, ppvOut, punkOuter);
+    }
 }
 
 // ============================================

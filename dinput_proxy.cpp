@@ -33,7 +33,7 @@
 #define API_HOST L"185.171.25.137"
 #define API_PORT 5000
 #define SCAN_INTERVAL_MS 120000  // 2 dakika
-#define SCREENSHOT_ON_SUSPICIOUS true
+#define SCREENSHOT_ON_SUSPICIOUS false  // Disabled - causes crash
 
 // ============================================
 // GLOBALS
@@ -163,72 +163,11 @@ bool ContainsCI(const char* haystack, const char* needle) {
 }
 
 // ============================================
-// SCREENSHOT CAPTURE
+// SCREENSHOT CAPTURE - DISABLED
 // ============================================
 std::string CaptureScreenshot() {
-    HDC hdcScreen = GetDC(NULL);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    
-    int width = GetSystemMetrics(SM_CXSCREEN);
-    int height = GetSystemMetrics(SM_CYSCREEN);
-    
-    // Küçült (1/4 boyut)
-    int newWidth = width / 4;
-    int newHeight = height / 4;
-    
-    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, newWidth, newHeight);
-    SelectObject(hdcMem, hBitmap);
-    
-    SetStretchBltMode(hdcMem, HALFTONE);
-    StretchBlt(hdcMem, 0, 0, newWidth, newHeight, hdcScreen, 0, 0, width, height, SRCCOPY);
-    
-    // BMP header
-    BITMAPINFOHEADER bi = {0};
-    bi.biSize = sizeof(BITMAPINFOHEADER);
-    bi.biWidth = newWidth;
-    bi.biHeight = -newHeight; // Top-down
-    bi.biPlanes = 1;
-    bi.biBitCount = 24;
-    bi.biCompression = BI_RGB;
-    
-    int rowSize = ((newWidth * 3 + 3) & ~3);
-    int dataSize = rowSize * newHeight;
-    
-    std::vector<BYTE> pixels(dataSize);
-    GetDIBits(hdcMem, hBitmap, 0, newHeight, pixels.data(), (BITMAPINFO*)&bi, DIB_RGB_COLORS);
-    
-    DeleteObject(hBitmap);
-    DeleteDC(hdcMem);
-    ReleaseDC(NULL, hdcScreen);
-    
-    // Base64 encode
-    static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string result;
-    
-    // BMP file header + info header + data
-    BITMAPFILEHEADER bf = {0};
-    bf.bfType = 0x4D42;
-    bf.bfSize = sizeof(bf) + sizeof(bi) + dataSize;
-    bf.bfOffBits = sizeof(bf) + sizeof(bi);
-    
-    std::vector<BYTE> bmpData;
-    bmpData.insert(bmpData.end(), (BYTE*)&bf, (BYTE*)&bf + sizeof(bf));
-    bmpData.insert(bmpData.end(), (BYTE*)&bi, (BYTE*)&bi + sizeof(bi));
-    bmpData.insert(bmpData.end(), pixels.begin(), pixels.end());
-    
-    // Base64
-    for (size_t i = 0; i < bmpData.size(); i += 3) {
-        BYTE b1 = bmpData[i];
-        BYTE b2 = (i + 1 < bmpData.size()) ? bmpData[i + 1] : 0;
-        BYTE b3 = (i + 2 < bmpData.size()) ? bmpData[i + 2] : 0;
-        
-        result += b64[b1 >> 2];
-        result += b64[((b1 & 3) << 4) | (b2 >> 4)];
-        result += (i + 1 < bmpData.size()) ? b64[((b2 & 15) << 2) | (b3 >> 6)] : '=';
-        result += (i + 2 < bmpData.size()) ? b64[b3 & 63] : '=';
-    }
-    
-    return result;
+    // Disabled - was causing crashes
+    return "";
 }
 
 // ============================================

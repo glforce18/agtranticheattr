@@ -16,24 +16,24 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "winhttp.lib")
 
-#define AGTR_VERSION "7.1"
+#define AGTR_VERSION "10.0"
 #define AGTR_HASH_LENGTH 8
-#define AGTR_SCAN_INTERVAL 120000
-#define AGTR_INITIAL_DELAY 10000
+#define AGTR_SCAN_INTERVAL 120000   // 2 dakika
+#define AGTR_INITIAL_DELAY 10000    // 10 saniye
 
 // ============================================
-// API CONFIGURATION - DEĞİŞTİR!
+// API CONFIGURATION
 // ============================================
-#define API_HOST L"185.171.25.137"    // VDS IP
-#define API_PORT 5000                  // Python API port
-#define API_PATH L"/api/v1/scan"       // Endpoint
-#define API_USE_HTTPS false            // HTTP
+#define API_HOST L"185.171.25.137"
+#define API_PORT 5000
+#define API_PATH L"/api/v1/scan"
+#define API_USE_HTTPS false
 
 // ============================================
 // OBFUSCATED KEY
 // ============================================
 #define OBF_XOR 0x5A
-static const unsigned char OBF_KEY[] = {0x1B,0x3D,0x2E,0x28,0x6F,0x6A,0x6F,0x75,0x29,0x3F,0x39,0x28,0x3F,0x2E}; // "AGTR2025Secret"
+static const unsigned char OBF_KEY[] = {0x1B,0x3D,0x2E,0x28,0x6F,0x6A,0x6F,0x75,0x29,0x3F,0x39,0x28,0x3F,0x2E};
 #define OBF_KEY_LEN 14
 static void Deobf(const unsigned char* s, int len, char* d) { for(int i=0;i<len;i++) d[i]=s[i]^OBF_XOR; d[len]=0; }
 
@@ -98,25 +98,23 @@ public:
     std::string GetHashString() { 
         unsigned char d[16]; Final(d); 
         char h[33]; 
-        for(int i=0;i<16;i++) sprintf(h+i*2,"%02X",d[i]);
+        for(int i=0;i<16;i++) sprintf(h+i*2,"%02x",d[i]); 
         return std::string(h); 
     }
-    std::string GetShortHash() { return GetHashString().substr(0, AGTR_HASH_LENGTH); }
 private:
-    unsigned int state[4],count[2]; unsigned char buffer[64];
-    void Encode(unsigned char* o,const unsigned int* in,unsigned int len){for(unsigned int i=0,j=0;j<len;i++,j+=4){o[j]=in[i]&0xff;o[j+1]=(in[i]>>8)&0xff;o[j+2]=(in[i]>>16)&0xff;o[j+3]=(in[i]>>24)&0xff;}}
-    void Decode(unsigned int* o,const unsigned char* in,unsigned int len){for(unsigned int i=0,j=0;j<len;i++,j+=4)o[i]=in[j]|(in[j+1]<<8)|(in[j+2]<<16)|(in[j+3]<<24);}
-    void Transform(unsigned int st[4],const unsigned char block[64]) {
-        unsigned int a=st[0],b=st[1],c=st[2],d=st[3],x[16]; Decode(x,block,64);
-        #define F(x,y,z)(((x)&(y))|((~x)&(z)))
-        #define G(x,y,z)(((x)&(z))|((y)&(~z)))
-        #define H(x,y,z)((x)^(y)^(z))
-        #define I(x,y,z)((y)^((x)|(~z)))
-        #define RL(x,n)(((x)<<(n))|((x)>>(32-(n))))
-        #define FF(a,b,c,d,x,s,ac){a+=F(b,c,d)+x+ac;a=RL(a,s);a+=b;}
-        #define GG(a,b,c,d,x,s,ac){a+=G(b,c,d)+x+ac;a=RL(a,s);a+=b;}
-        #define HH(a,b,c,d,x,s,ac){a+=H(b,c,d)+x+ac;a=RL(a,s);a+=b;}
-        #define II(a,b,c,d,x,s,ac){a+=I(b,c,d)+x+ac;a=RL(a,s);a+=b;}
+    unsigned int state[4], count[2]; unsigned char buffer[64];
+    void Transform(unsigned int state[4], const unsigned char block[64]) {
+        unsigned int a=state[0],b=state[1],c=state[2],d=state[3],x[16];
+        Decode(x,block,64);
+        #define S(x,n) (((x)<<(n))|((x)>>(32-(n))))
+        #define F(x,y,z) (((x)&(y))|((~x)&(z)))
+        #define G(x,y,z) (((x)&(z))|((y)&(~z)))
+        #define H(x,y,z) ((x)^(y)^(z))
+        #define I(x,y,z) ((y)^((x)|(~z)))
+        #define FF(a,b,c,d,x,s,ac) {(a)+=F((b),(c),(d))+(x)+(ac);(a)=S((a),(s));(a)+=(b);}
+        #define GG(a,b,c,d,x,s,ac) {(a)+=G((b),(c),(d))+(x)+(ac);(a)=S((a),(s));(a)+=(b);}
+        #define HH(a,b,c,d,x,s,ac) {(a)+=H((b),(c),(d))+(x)+(ac);(a)=S((a),(s));(a)+=(b);}
+        #define II(a,b,c,d,x,s,ac) {(a)+=I((b),(c),(d))+(x)+(ac);(a)=S((a),(s));(a)+=(b);}
         FF(a,b,c,d,x[0],7,0xd76aa478);FF(d,a,b,c,x[1],12,0xe8c7b756);FF(c,d,a,b,x[2],17,0x242070db);FF(b,c,d,a,x[3],22,0xc1bdceee);
         FF(a,b,c,d,x[4],7,0xf57c0faf);FF(d,a,b,c,x[5],12,0x4787c62a);FF(c,d,a,b,x[6],17,0xa8304613);FF(b,c,d,a,x[7],22,0xfd469501);
         FF(a,b,c,d,x[8],7,0x698098d8);FF(d,a,b,c,x[9],12,0x8b44f7af);FF(c,d,a,b,x[10],17,0xffff5bb1);FF(b,c,d,a,x[11],22,0x895cd7be);
@@ -133,66 +131,118 @@ private:
         II(a,b,c,d,x[12],6,0x655b59c3);II(d,a,b,c,x[3],10,0x8f0ccc92);II(c,d,a,b,x[10],15,0xffeff47d);II(b,c,d,a,x[1],21,0x85845dd1);
         II(a,b,c,d,x[8],6,0x6fa87e4f);II(d,a,b,c,x[15],10,0xfe2ce6e0);II(c,d,a,b,x[6],15,0xa3014314);II(b,c,d,a,x[13],21,0x4e0811a1);
         II(a,b,c,d,x[4],6,0xf7537e82);II(d,a,b,c,x[11],10,0xbd3af235);II(c,d,a,b,x[2],15,0x2ad7d2bb);II(b,c,d,a,x[9],21,0xeb86d391);
-        st[0]+=a;st[1]+=b;st[2]+=c;st[3]+=d;
+        state[0]+=a;state[1]+=b;state[2]+=c;state[3]+=d;
     }
+    void Encode(unsigned char* out, const unsigned int* in, unsigned int len) { for(unsigned int i=0,j=0;j<len;i++,j+=4){out[j]=in[i]&0xff;out[j+1]=(in[i]>>8)&0xff;out[j+2]=(in[i]>>16)&0xff;out[j+3]=(in[i]>>24)&0xff;} }
+    void Decode(unsigned int* out, const unsigned char* in, unsigned int len) { for(unsigned int i=0,j=0;j<len;i++,j+=4) out[i]=in[j]|(in[j+1]<<8)|(in[j+2]<<16)|(in[j+3]<<24); }
 };
 
 // ============================================
 // GLOBALS
 // ============================================
-HANDLE g_hThread = NULL;
-bool g_bRunning = false;
-bool g_bThreadStarted = false;
-char g_szGameDir[MAX_PATH] = {0};
-char g_szValveDir[MAX_PATH] = {0};
-char g_szHWID[64] = {0};
-char g_szDLLHash[33] = {0};
-char g_szServerIP[64] = {0};  // Bağlı olunan server
-int g_iServerPort = 0;
-int g_iSusCount = 0;
-int g_iRegistrySus = 0;
-bool g_bPassed = true;
+static HANDLE g_hThread = NULL;
+static bool g_bRunning = true;
+static bool g_bThreadStarted = false;
 
-// File cache
-struct CachedFile { std::string shortHash, fullHash; DWORD modTime; };
-std::map<std::string, CachedFile> g_FileCache;
+static char g_szHWID[64] = {0};
+static char g_szDLLHash[64] = {0};
+static char g_szGameDir[MAX_PATH] = {0};
+static char g_szValveDir[MAX_PATH] = {0};
+static char g_szServerIP[64] = "unknown";
+static int g_iServerPort = 0;
 
-// Suspicious lists
+static bool g_bPassed = true;
+static int g_iSusCount = 0;
+static int g_iRegistrySus = 0;
+
+// Detaylı veri yapıları
+struct ProcessInfo {
+    std::string name;
+    std::string path;
+    DWORD pid;
+    bool suspicious;
+};
+static std::vector<ProcessInfo> g_Processes;
+
+struct ModuleInfo {
+    std::string name;
+    std::string path;
+    std::string hash;
+    DWORD size;
+};
+static std::vector<ModuleInfo> g_Modules;
+
+struct WindowInfo {
+    std::string title;
+    std::string className;
+    DWORD pid;
+    bool suspicious;
+};
+static std::vector<WindowInfo> g_Windows;
+
+struct FileHashInfo {
+    std::string filename;
+    std::string path;
+    std::string shortHash;
+    std::string fullHash;
+    DWORD size;
+    DWORD modTime;
+};
+static std::map<std::string, FileHashInfo> g_FileCache;
+
+// ============================================
+// SUSPICIOUS LISTS
+// ============================================
 const char* g_SusProc[] = { 
-    "cheatengine-x86_64.exe", "cheatengine-i386.exe", "cheatengine.exe", 
-    "artmoney.exe", "ollydbg.exe", "x64dbg.exe", "x32dbg.exe", 
-    "processhacker.exe", "extreme injector.exe", "wemod.exe", 
-    "ida.exe", "ida64.exe", "ghidra.exe", "reclass.exe", NULL 
+    "cheatengine", "artmoney", "ollydbg", "x64dbg", "x32dbg", 
+    "processhacker", "wireshark", "fiddler", "ida.exe", "ida64.exe",
+    "ghidra", "reclass", "themida", "vmware", "vbox",
+    "ce.exe", "speedhack", "gamehack", "trainer", "injector",
+    NULL 
 };
 const char* g_SusWin[] = { 
-    "cheat engine", "artmoney", "process hacker", 
-    "extreme injector", "[aimbot]", "[wallhack]", "[esp]", NULL 
+    "cheat engine", "artmoney", "speed hack", "game hack", 
+    "[aimbot]", "[wallhack]", "[esp]", "trainer", "injector",
+    NULL 
 };
-const char* g_SusFile[] = { 
-    "aimbot", "wallhack", "speedhack", "norecoil", "triggerbot", 
-    "ssw", "plwh", "ogc", NULL 
+const char* g_SusReg[] = { 
+    "SOFTWARE\\Cheat Engine", 
+    "SOFTWARE\\ArtMoney",
+    "SOFTWARE\\Process Hacker",
+    NULL 
 };
-const char* g_SusReg[] = {
-    "SOFTWARE\\Cheat Engine", "SOFTWARE\\CheatEngine", "SOFTWARE\\ArtMoney",
-    "SOFTWARE\\Process Hacker", "SOFTWARE\\x64dbg", "SOFTWARE\\OllyDbg", NULL
+const char* g_SusFile[] = { "aimbot", "wallhack", "cheat", "hack", "esp", NULL };
+
+const char* g_SusDLLs[] = {
+    "opengl32.dll",  // Custom opengl hook (system dışında)
+    "d3d9.dll",      // DirectX hook
+    "hook.dll", "inject.dll", "cheat.dll", "hack.dll",
+    "aimbot.dll", "wallhack.dll", "esp.dll", "speedhack.dll",
+    NULL
 };
 
 // ============================================
 // LOGGING
 // ============================================
+static FILE* g_LogFile = NULL;
 void Log(const char* fmt, ...) {
-    char path[MAX_PATH];
-    sprintf(path, "%s\\agtr_anticheat.log", g_szValveDir);
-    FILE* f = fopen(path, "a");
-    if (f) {
+    if (!g_LogFile) {
+        char path[MAX_PATH];
+        sprintf(path, "%s\\agtr_client.log", g_szGameDir[0] ? g_szGameDir : ".");
+        g_LogFile = fopen(path, "a");
+    }
+    if (g_LogFile) {
         SYSTEMTIME st; GetLocalTime(&st);
-        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d] ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        va_list args; va_start(args, fmt); vfprintf(f, fmt, args); va_end(args);
-        fprintf(f, "\n"); fclose(f);
+        fprintf(g_LogFile, "[%02d:%02d:%02d] ", st.wHour, st.wMinute, st.wSecond);
+        va_list args; va_start(args, fmt);
+        vfprintf(g_LogFile, fmt, args);
+        va_end(args);
+        fprintf(g_LogFile, "\n");
+        fflush(g_LogFile);
     }
 }
 
-void ToLower(char* s) { for(int i=0;s[i];i++) if(s[i]>='A'&&s[i]<='Z') s[i]+=32; }
+void ToLower(char* s) { for (; *s; s++) *s = tolower(*s); }
 
 // ============================================
 // HWID & HASH
@@ -205,10 +255,14 @@ void GenHWID() {
     Log("HWID: %s", g_szHWID);
 }
 
-void GetFileHash(const char* filepath, char* shortHash, char* fullHash) {
+void GetFileHash(const char* filepath, char* shortHash, char* fullHash, DWORD* fileSize) {
     shortHash[0] = fullHash[0] = 0;
+    *fileSize = 0;
     HANDLE h = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
+    
+    *fileSize = GetFileSize(h, NULL);
+    
     MD5 md5; unsigned char buf[32768]; DWORD rd;
     while(ReadFile(h, buf, sizeof(buf), &rd, NULL) && rd > 0) md5.Update(buf, rd);
     CloseHandle(h);
@@ -221,49 +275,185 @@ void ComputeDLLHash() {
     char path[MAX_PATH];
     sprintf(path, "%s\\dinput.dll", g_szGameDir);
     char shortH[16];
-    GetFileHash(path, shortH, g_szDLLHash);
+    DWORD size;
+    GetFileHash(path, shortH, g_szDLLHash, &size);
     Log("DLL Hash: %s", g_szDLLHash);
 }
 
 // ============================================
-// SCANNING
+// PROCESS SCANNER - DETAYLI
 // ============================================
-int ScanProc() {
+int ScanProcesses() {
+    g_Processes.clear();
     int sus = 0;
+    
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
+    
     PROCESSENTRY32 pe; pe.dwSize = sizeof(pe);
     if (Process32First(snap, &pe)) {
         do {
+            ProcessInfo pi;
+            pi.name = pe.szExeFile;
+            pi.pid = pe.th32ProcessID;
+            pi.suspicious = false;
+            
+            // Get full path
+            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+            if (hProc) {
+                char path[MAX_PATH] = {0};
+                DWORD size = MAX_PATH;
+                if (QueryFullProcessImageNameA(hProc, 0, path, &size)) {
+                    pi.path = path;
+                }
+                CloseHandle(hProc);
+            }
+            
+            // Check if suspicious
             char name[MAX_PATH]; strcpy(name, pe.szExeFile); ToLower(name);
             for (int i = 0; g_SusProc[i]; i++) {
-                if (strcmp(name, g_SusProc[i]) == 0) { Log("SUS PROC: %s", pe.szExeFile); sus++; break; }
+                if (strstr(name, g_SusProc[i])) {
+                    pi.suspicious = true;
+                    sus++;
+                    Log("SUS PROC: %s (%s)", pe.szExeFile, pi.path.c_str());
+                    break;
+                }
             }
+            
+            g_Processes.push_back(pi);
         } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
     return sus;
 }
 
+// ============================================
+// MODULE SCANNER - HL.EXE'nin yüklenmiş DLL'leri
+// ============================================
+int ScanModules() {
+    g_Modules.clear();
+    int sus = 0;
+    
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    
+    char sysDir[MAX_PATH];
+    GetSystemDirectoryA(sysDir, MAX_PATH);
+    ToLower(sysDir);
+    
+    MODULEENTRY32 me; me.dwSize = sizeof(me);
+    if (Module32First(snap, &me)) {
+        do {
+            ModuleInfo mi;
+            mi.name = me.szModule;
+            mi.path = me.szExePath;
+            mi.size = me.modBaseSize;
+            
+            // Hash hesapla
+            char shortH[16], fullH[64];
+            DWORD fsize;
+            GetFileHash(me.szExePath, shortH, fullH, &fsize);
+            mi.hash = shortH;
+            
+            // Suspicious check
+            char modName[MAX_PATH]; strcpy(modName, me.szModule); ToLower(modName);
+            char modPath[MAX_PATH]; strcpy(modPath, me.szExePath); ToLower(modPath);
+            
+            for (int i = 0; g_SusDLLs[i]; i++) {
+                if (strstr(modName, g_SusDLLs[i])) {
+                    // opengl32 ve d3d9 için system dizini kontrolü
+                    if ((strcmp(g_SusDLLs[i], "opengl32.dll") == 0 || strcmp(g_SusDLLs[i], "d3d9.dll") == 0)) {
+                        if (strstr(modPath, sysDir)) continue; // System DLL, OK
+                    }
+                    sus++;
+                    Log("SUS MODULE: %s (%s)", me.szModule, me.szExePath);
+                    break;
+                }
+            }
+            
+            g_Modules.push_back(mi);
+        } while (Module32Next(snap, &me));
+    }
+    CloseHandle(snap);
+    
+    Log("Loaded modules: %d", (int)g_Modules.size());
+    return sus;
+}
+
+// ============================================
+// WINDOW SCANNER - DETAYLI
+// ============================================
 static int g_WinSus = 0;
+
 BOOL CALLBACK EnumWinCB(HWND hwnd, LPARAM) {
-    char title[256] = {0}; GetWindowTextA(hwnd, title, 256);
-    if (title[0]) { ToLower(title); for (int i = 0; g_SusWin[i]; i++) { if (strstr(title, g_SusWin[i])) { g_WinSus++; break; } } }
+    char title[256] = {0}; 
+    char className[256] = {0};
+    
+    GetWindowTextA(hwnd, title, 256);
+    GetClassNameA(hwnd, className, 256);
+    
+    if (title[0] || className[0]) {
+        WindowInfo wi;
+        wi.title = title;
+        wi.className = className;
+        
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        wi.pid = pid;
+        wi.suspicious = false;
+        
+        if (title[0]) {
+            char lowerTitle[256]; strcpy(lowerTitle, title); ToLower(lowerTitle);
+            for (int i = 0; g_SusWin[i]; i++) {
+                if (strstr(lowerTitle, g_SusWin[i])) {
+                    wi.suspicious = true;
+                    g_WinSus++;
+                    Log("SUS WINDOW: %s (class: %s)", title, className);
+                    break;
+                }
+            }
+        }
+        
+        if (wi.title.length() > 0) {
+            g_Windows.push_back(wi);
+        }
+    }
     return TRUE;
 }
-int ScanWin() { g_WinSus = 0; EnumWindows(EnumWinCB, 0); return g_WinSus; }
 
+int ScanWindows() { 
+    g_Windows.clear();
+    g_WinSus = 0; 
+    EnumWindows(EnumWinCB, 0); 
+    Log("Windows found: %d", (int)g_Windows.size());
+    return g_WinSus; 
+}
+
+// ============================================
+// REGISTRY SCANNER
+// ============================================
 int ScanRegistry() {
     int sus = 0;
     for (int i = 0; g_SusReg[i]; i++) {
         HKEY hKey;
-        if (RegOpenKeyExA(HKEY_CURRENT_USER, g_SusReg[i], 0, KEY_READ, &hKey) == ERROR_SUCCESS) { Log("SUS REG: HKCU\\%s", g_SusReg[i]); RegCloseKey(hKey); sus++; }
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, g_SusReg[i], 0, KEY_READ, &hKey) == ERROR_SUCCESS) { Log("SUS REG: HKLM\\%s", g_SusReg[i]); RegCloseKey(hKey); sus++; }
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, g_SusReg[i], 0, KEY_READ, &hKey) == ERROR_SUCCESS) { 
+            Log("SUS REG: HKCU\\%s", g_SusReg[i]); 
+            RegCloseKey(hKey); 
+            sus++; 
+        }
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, g_SusReg[i], 0, KEY_READ, &hKey) == ERROR_SUCCESS) { 
+            Log("SUS REG: HKLM\\%s", g_SusReg[i]); 
+            RegCloseKey(hKey); 
+            sus++; 
+        }
     }
     g_iRegistrySus = sus;
     return sus;
 }
 
+// ============================================
+// FILE SCANNER - DETAYLI
+// ============================================
 void ScanDir(const char* dir, const char* pattern) {
     char searchPath[MAX_PATH]; sprintf(searchPath, "%s\\%s", dir, pattern);
     WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(searchPath, &fd);
@@ -273,11 +463,25 @@ void ScanDir(const char* dir, const char* pattern) {
         char filepath[MAX_PATH], filename[MAX_PATH];
         sprintf(filepath, "%s\\%s", dir, fd.cFileName);
         strcpy(filename, fd.cFileName); ToLower(filename);
+        
         DWORD modTime = fd.ftLastWriteTime.dwLowDateTime;
         auto it = g_FileCache.find(filename);
         if (it != g_FileCache.end() && it->second.modTime == modTime) continue;
-        char shortH[16], fullH[64]; GetFileHash(filepath, shortH, fullH);
-        if (shortH[0]) { CachedFile cf; cf.shortHash=shortH; cf.fullHash=fullH; cf.modTime=modTime; g_FileCache[filename]=cf; }
+        
+        char shortH[16], fullH[64];
+        DWORD fileSize;
+        GetFileHash(filepath, shortH, fullH, &fileSize);
+        
+        if (shortH[0]) { 
+            FileHashInfo fhi;
+            fhi.filename = filename;
+            fhi.path = filepath;
+            fhi.shortHash = shortH;
+            fhi.fullHash = fullH;
+            fhi.size = fileSize;
+            fhi.modTime = modTime;
+            g_FileCache[filename] = fhi;
+        }
     } while (FindNextFileA(h, &fd));
     FindClose(h);
 }
@@ -293,8 +497,6 @@ void ScanAllFiles() {
     sprintf(dir, "%s\\ag\\cl_dlls", g_szGameDir); ScanDir(dir, "*.dll");
     sprintf(dir, "%s\\ag\\dlls", g_szGameDir); ScanDir(dir, "*.dll");
     sprintf(dir, "%s\\ag\\addons", g_szGameDir); ScanDir(dir, "*.dll");
-    sprintf(dir, "%s\\cstrike", g_szGameDir); ScanDir(dir, "*.dll");
-    sprintf(dir, "%s\\cstrike\\cl_dlls", g_szGameDir); ScanDir(dir, "*.dll");
     Log("Scanned %d files", (int)g_FileCache.size());
 }
 
@@ -302,14 +504,18 @@ int CheckSusFiles() {
     int sus = 0;
     for (auto& p : g_FileCache) {
         for (int i = 0; g_SusFile[i]; i++) {
-            if (p.first.find(g_SusFile[i]) != std::string::npos) { Log("SUS FILE: %s", p.first.c_str()); sus++; break; }
+            if (p.first.find(g_SusFile[i]) != std::string::npos) { 
+                Log("SUS FILE: %s", p.first.c_str()); 
+                sus++; 
+                break; 
+            }
         }
     }
     return sus;
 }
 
 // ============================================
-// JSON BUILDER (Simple)
+// JSON BUILDER - DETAYLI
 // ============================================
 std::string EscapeJson(const std::string& s) {
     std::string out;
@@ -318,6 +524,7 @@ std::string EscapeJson(const std::string& s) {
         else if (c == '\\') out += "\\\\";
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
         else out += c;
     }
     return out;
@@ -335,13 +542,59 @@ std::string BuildJson() {
     json += "\"reg_sus\":" + std::to_string(g_iRegistrySus) + ",";
     json += "\"timestamp\":" + std::to_string(GetTickCount()) + ",";
     
-    // File hashes
+    // File hashes - DETAYLI
     json += "\"hashes\":[";
     bool first = true;
     for (auto& h : g_FileCache) {
         if (!first) json += ",";
-        json += "{\"file\":\"" + EscapeJson(h.first) + "\",\"hash\":\"" + h.second.shortHash + "\"}";
+        json += "{\"file\":\"" + EscapeJson(h.second.filename) + "\",";
+        json += "\"path\":\"" + EscapeJson(h.second.path) + "\",";
+        json += "\"hash\":\"" + h.second.shortHash + "\",";
+        json += "\"size\":" + std::to_string(h.second.size) + "}";
         first = false;
+    }
+    json += "],";
+    
+    // Processes - DETAYLI
+    json += "\"processes\":[";
+    first = true;
+    for (auto& p : g_Processes) {
+        if (!first) json += ",";
+        json += "{\"name\":\"" + EscapeJson(p.name) + "\",";
+        json += "\"path\":\"" + EscapeJson(p.path) + "\",";
+        json += "\"pid\":" + std::to_string(p.pid) + ",";
+        json += "\"suspicious\":" + std::string(p.suspicious ? "true" : "false") + "}";
+        first = false;
+    }
+    json += "],";
+    
+    // Modules (hl.exe loaded DLLs) - DETAYLI
+    json += "\"modules\":[";
+    first = true;
+    for (auto& m : g_Modules) {
+        if (!first) json += ",";
+        json += "{\"name\":\"" + EscapeJson(m.name) + "\",";
+        json += "\"path\":\"" + EscapeJson(m.path) + "\",";
+        json += "\"hash\":\"" + m.hash + "\",";
+        json += "\"size\":" + std::to_string(m.size) + "}";
+        first = false;
+    }
+    json += "],";
+    
+    // Windows - DETAYLI
+    json += "\"windows\":[";
+    first = true;
+    int winCount = 0;
+    for (auto& w : g_Windows) {
+        if (winCount >= 50) break; // Limit
+        if (w.title.empty()) continue;
+        if (!first) json += ",";
+        json += "{\"title\":\"" + EscapeJson(w.title) + "\",";
+        json += "\"class\":\"" + EscapeJson(w.className) + "\",";
+        json += "\"pid\":" + std::to_string(w.pid) + ",";
+        json += "\"suspicious\":" + std::string(w.suspicious ? "true" : "false") + "}";
+        first = false;
+        winCount++;
     }
     json += "]";
     
@@ -350,7 +603,7 @@ std::string BuildJson() {
 }
 
 // ============================================
-// SIGNATURE (HMAC-like)
+// SIGNATURE
 // ============================================
 std::string ComputeSignature(const std::string& data) {
     char key[32]; Deobf(OBF_KEY, OBF_KEY_LEN, key);
@@ -361,10 +614,10 @@ std::string ComputeSignature(const std::string& data) {
 }
 
 // ============================================
-// HTTP POST (WinHTTP)
+// HTTP POST
 // ============================================
 bool SendToAPI(const std::string& jsonData, const std::string& signature) {
-    HINTERNET hSession = WinHttpOpen(L"AGTR/7.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    HINTERNET hSession = WinHttpOpen(L"AGTR/10.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) { Log("HTTP: Session failed"); return false; }
     
     HINTERNET hConnect = WinHttpConnect(hSession, API_HOST, API_PORT, 0);
@@ -374,7 +627,6 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", API_PATH, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hRequest) { Log("HTTP: Request failed"); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
     
-    // Headers
     std::wstring headers = L"Content-Type: application/json\r\n";
     headers += L"X-AGTR-Signature: " + std::wstring(signature.begin(), signature.end()) + L"\r\n";
     headers += L"X-AGTR-HWID: " + std::wstring(g_szHWID, g_szHWID + strlen(g_szHWID)) + L"\r\n";
@@ -400,101 +652,50 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
 }
 
 // ============================================
-// SERVER IP DETECTION
-// ============================================
-void DetectServerIP() {
-    // userconfig.cfg veya config.cfg'den server IP'sini bul
-    // Veya cmdline'dan
-    char cmdline[1024];
-    GetModuleFileNameA(NULL, cmdline, sizeof(cmdline));
-    
-    // Şimdilik boş bırak - server bağlantısında güncellenecek
-    strcpy(g_szServerIP, "unknown");
-    g_iServerPort = 27015;
-    
-    // TODO: cl.dll hook ile gerçek server IP'sini al
-}
-
-// ============================================
-// CACHE SAVE/LOAD
-// ============================================
-void SaveCache() {
-    char path[MAX_PATH]; sprintf(path, "%s\\agtr_cache.dat", g_szValveDir);
-    FILE* f = fopen(path, "wb");
-    if (f) { for (auto& p : g_FileCache) fprintf(f, "%s|%s|%s|%u\n", p.first.c_str(), p.second.shortHash.c_str(), p.second.fullHash.c_str(), p.second.modTime); fclose(f); }
-}
-
-void LoadCache() {
-    char path[MAX_PATH]; sprintf(path, "%s\\agtr_cache.dat", g_szValveDir);
-    FILE* f = fopen(path, "r");
-    if (f) {
-        char line[512];
-        while (fgets(line, sizeof(line), f)) {
-            char fn[256], sh[16], fh[64]; DWORD mod;
-            if (sscanf(line, "%[^|]|%[^|]|%[^|]|%u", fn, sh, fh, &mod) == 4) {
-                CachedFile cf; cf.shortHash=sh; cf.fullHash=fh; cf.modTime=mod; g_FileCache[fn]=cf;
-            }
-        }
-        fclose(f);
-        Log("Cache loaded: %d entries", (int)g_FileCache.size());
-    }
-}
-
-// ============================================
 // MAIN SCAN
 // ============================================
 void DoScan() {
-    Log("=== SCAN START ===");
-    
-    ComputeDLLHash();
-    DetectServerIP();
+    Log("=== Starting Scan ===");
     
     g_iSusCount = 0;
-    g_iSusCount += ScanProc();
-    g_iSusCount += ScanWin();
+    g_iSusCount += ScanProcesses();
+    g_iSusCount += ScanModules();
+    g_iSusCount += ScanWindows();
     g_iSusCount += ScanRegistry();
-    
-    ScanAllFiles();
     g_iSusCount += CheckSusFiles();
     
     g_bPassed = (g_iSusCount == 0);
     
-    // Build JSON and send
     std::string json = BuildJson();
     std::string sig = ComputeSignature(json);
     
-    Log("Sending to API: %d bytes, sig: %s", (int)json.length(), sig.substr(0, 16).c_str());
+    Log("Scan: %s | Sus:%d | Proc:%d | Mod:%d | Win:%d | Files:%d | Size:%dKB", 
+        g_bPassed ? "CLEAN" : "SUSPICIOUS", g_iSusCount,
+        (int)g_Processes.size(), (int)g_Modules.size(), 
+        (int)g_Windows.size(), (int)g_FileCache.size(),
+        (int)(json.length() / 1024));
     
-    if (SendToAPI(json, sig)) {
-        Log("API: Success");
-    } else {
-        Log("API: Failed (will retry)");
-    }
-    
-    SaveCache();
-    Log("Scan complete: %s | Sus:%d | Reg:%d", g_bPassed ? "CLEAN" : "SUSPICIOUS", g_iSusCount, g_iRegistrySus);
+    SendToAPI(json, sig);
 }
 
-// ============================================
-// MAIN THREAD
-// ============================================
 DWORD WINAPI ScanThread(LPVOID) {
     Sleep(AGTR_INITIAL_DELAY);
     
-    Log("=== AGTR v%s Started (Network Mode) ===", AGTR_VERSION);
+    Log("=== AGTR v%s Started ===", AGTR_VERSION);
     
     GenHWID();
-    LoadCache();
-    
-    // Initial scan
+    ComputeDLLHash();
+    ScanAllFiles();
     DoScan();
     
-    // Periodic rescan
     while (g_bRunning) {
         for (int i = 0; i < AGTR_SCAN_INTERVAL / 100 && g_bRunning; i++) {
             Sleep(100);
         }
-        if (g_bRunning) DoScan();
+        if (g_bRunning) {
+            ScanAllFiles(); // Refresh file cache
+            DoScan();
+        }
     }
     
     return 0;
@@ -508,8 +709,11 @@ void StartScanThread() {
 }
 
 void Init() {
-    char path[MAX_PATH]; GetModuleFileNameA(NULL, path, MAX_PATH);
-    char* slash = strrchr(path, '\\'); if (slash) *slash = 0;
+    char path[MAX_PATH];
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    char* slash = strrchr(path, '\\');
+    if (slash) *slash = 0;
+    
     strcpy(g_szGameDir, path);
     sprintf(g_szValveDir, "%s\\valve", path);
 }
@@ -517,10 +721,18 @@ void Init() {
 void Shutdown() {
     g_bRunning = false;
     if (g_hThread) { WaitForSingleObject(g_hThread, 2000); CloseHandle(g_hThread); }
+    if (g_LogFile) { fclose(g_LogFile); g_LogFile = NULL; }
 }
 
 BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) { DisableThreadLibraryCalls(hMod); LoadOriginal(); Init(); StartScanThread(); }
-    else if (reason == DLL_PROCESS_DETACH) { Shutdown(); if (g_hOriginal) FreeLibrary(g_hOriginal); }
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hMod);
+        LoadOriginal();
+        Init();
+        StartScanThread();
+    }
+    else if (reason == DLL_PROCESS_DETACH) {
+        Shutdown();
+    }
     return TRUE;
 }

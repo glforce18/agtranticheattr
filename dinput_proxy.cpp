@@ -130,10 +130,11 @@ private:
 };
 
 // ============================================
-// ENCRYPTION
+// ENCRYPTION (uses obfuscated key)
 // ============================================
 std::string Encrypt(const std::string& data) {
-    const char* key = AGTR_ENCRYPTION_KEY;
+    char key[32];
+    Deobf(OBF_MKEY, OBF_MKEY_LEN, key);
     size_t keyLen = strlen(key);
     std::string result;
     for (size_t i = 0; i < data.length(); i++) {

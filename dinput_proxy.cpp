@@ -16,9 +16,9 @@
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define AGTR_VERSION "4.6"
+#define AGTR_VERSION "4.7"
 #define AGTR_SCAN_INTERVAL 60000
-#define AGTR_INITIAL_DELAY 8000
+#define AGTR_INITIAL_DELAY 3000
 #define AGTR_ENCRYPTION_KEY "AGTR2025SecretKey!"
 #define AGTR_HASH_LENGTH 8
 
@@ -529,13 +529,62 @@ DWORD WINAPI ScanThread(LPVOID) {
     
     Sleep(AGTR_INITIAL_DELAY);
     
+    // Debug after sleep
+    df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "Sleep done, starting scan...\n");
+        fprintf(df, "ValveDir: %s\n", g_szValveDir);
+        fclose(df);
+    }
+    
     Log("=== AGTR v%s Started ===", AGTR_VERSION);
     
+    // Debug - Log yazildi mi?
+    df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "Log() called\n");
+        fclose(df);
+    }
+    
     GenHWID();
+    
+    df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "HWID: %s\n", g_szHWID);
+        fclose(df);
+    }
+    
     SetupAutoExec();
+    
+    df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "SetupAutoExec done\n");
+        fclose(df);
+    }
+    
     ScanAllFiles();
+    
+    df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "ScanAllFiles done, %d hashes\n", (int)g_Hashes.size());
+        fclose(df);
+    }
+    
     WriteHashes();
+    
+    df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "WriteHashes done\n");
+        fclose(df);
+    }
+    
     WriteSendCfg();
+    
+    df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "WriteSendCfg done - INIT COMPLETE\n");
+        fclose(df);
+    }
     
     while (g_bRunning) {
         DoScan();

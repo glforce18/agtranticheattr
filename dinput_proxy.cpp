@@ -16,7 +16,7 @@
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define AGTR_VERSION "4.5"
+#define AGTR_VERSION "4.6"
 #define AGTR_SCAN_INTERVAL 60000
 #define AGTR_INITIAL_DELAY 8000
 #define AGTR_ENCRYPTION_KEY "AGTR2025SecretKey!"
@@ -51,17 +51,14 @@ void StartScanThread();
 extern "C" {
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateA(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
         if (!LoadOriginal() || !oDirectInputCreateA) return E_FAIL;
-        StartScanThread();
         return oDirectInputCreateA(hinst, dwVersion, ppDI, punkOuter);
     }
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateW(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPVOID punkOuter) {
         if (!LoadOriginal() || !oDirectInputCreateW) return E_FAIL;
-        StartScanThread();
         return oDirectInputCreateW(hinst, dwVersion, ppDI, punkOuter);
     }
     __declspec(dllexport) HRESULT WINAPI DirectInputCreateEx(HINSTANCE hinst, DWORD dwVersion, REFGUID riid, LPVOID* ppvOut, LPVOID punkOuter) {
         if (!LoadOriginal() || !oDirectInputCreateEx) return E_FAIL;
-        StartScanThread();
         return oDirectInputCreateEx(hinst, dwVersion, riid, ppvOut, punkOuter);
     }
 }
@@ -521,6 +518,15 @@ void DoScan() {
 }
 
 DWORD WINAPI ScanThread(LPVOID) {
+    // Debug
+    char logpath[MAX_PATH];
+    sprintf(logpath, "%s\\agtr_debug.txt", g_szGameDir);
+    FILE* df = fopen(logpath, "a");
+    if (df) {
+        fprintf(df, "ScanThread started, waiting %d ms\n", AGTR_INITIAL_DELAY);
+        fclose(df);
+    }
+    
     Sleep(AGTR_INITIAL_DELAY);
     
     Log("=== AGTR v%s Started ===", AGTR_VERSION);
@@ -545,6 +551,16 @@ void StartScanThread() {
     if (g_bThreadStarted) return;
     g_bThreadStarted = true;
     g_bRunning = true;
+    
+    // Debug
+    char logpath[MAX_PATH];
+    sprintf(logpath, "%s\\agtr_debug.txt", g_szGameDir);
+    FILE* f = fopen(logpath, "a");
+    if (f) {
+        fprintf(f, "StartScanThread called\n");
+        fclose(f);
+    }
+    
     g_hThread = CreateThread(NULL, 0, ScanThread, NULL, 0, NULL);
 }
 
@@ -556,6 +572,17 @@ void Init() {
     
     strcpy(g_szGameDir, path);
     sprintf(g_szValveDir, "%s\\valve", path);
+    
+    // Debug: Hemen log yaz
+    char logpath[MAX_PATH];
+    sprintf(logpath, "%s\\agtr_debug.txt", g_szGameDir);
+    FILE* f = fopen(logpath, "w");
+    if (f) {
+        fprintf(f, "AGTR v%s Init\n", AGTR_VERSION);
+        fprintf(f, "GameDir: %s\n", g_szGameDir);
+        fprintf(f, "ValveDir: %s\n", g_szValveDir);
+        fclose(f);
+    }
 }
 
 void Shutdown() {
@@ -572,6 +599,7 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(hMod);
         LoadOriginal();
         Init();
+        StartScanThread();  // Hemen baslat
     }
     else if (reason == DLL_PROCESS_DETACH) {
         Shutdown();

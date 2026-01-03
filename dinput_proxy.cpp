@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <windows.h>
 #include <winhttp.h>
 #include <winsock2.h>
@@ -955,7 +956,7 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
     if (!hConnect) { Log("HTTP: Connect failed"); WinHttpCloseHandle(hSession); return false; }
     
     DWORD flags = API_USE_HTTPS ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", API_PATH, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", API_PATH_SCAN, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hRequest) { Log("HTTP: Request failed"); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
     
     std::wstring headers = L"Content-Type: application/json\r\n";

@@ -16,7 +16,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "winhttp.lib")
 
-#define AGTR_VERSION "10.0"
+#define AGTR_VERSION "10.1"
 #define AGTR_HASH_LENGTH 8
 #define AGTR_SCAN_INTERVAL 120000   // 2 dakika
 #define AGTR_INITIAL_DELAY 10000    // 10 saniye
@@ -196,13 +196,37 @@ static std::map<std::string, FileHashInfo> g_FileCache;
 const char* g_SusProc[] = { 
     "cheatengine", "artmoney", "ollydbg", "x64dbg", "x32dbg", 
     "processhacker", "wireshark", "fiddler", "ida.exe", "ida64.exe",
-    "ghidra", "reclass", "themida", "vmware", "vbox",
-    "ce.exe", "speedhack", "gamehack", "trainer", "injector",
+    "ghidra", "reclass", "themida", "ce.exe", "speedhack", 
+    "gamehack", "trainer", "injector", "aimbot", "wallhack",
     NULL 
 };
+
+// Sistem process'leri - WHITELIST (bunlar şüpheli DEĞİL)
+const char* g_WhitelistProc[] = {
+    "svchost.exe", "csrss.exe", "smss.exe", "wininit.exe", "services.exe",
+    "lsass.exe", "winlogon.exe", "explorer.exe", "dwm.exe", "taskhostw.exe",
+    "searchindexer", "searchhost", "runtimebroker", "sihost.exe", "fontdrvhost",
+    "ctfmon.exe", "conhost.exe", "dllhost.exe", "audiodg.exe", "spoolsv.exe",
+    // Windows Defender & Security
+    "msmpeng.exe", "mpcmdrun.exe", "mpdefendercoreservice", "securityhealthservice",
+    "smartscreen.exe", "sgrmbroker.exe", "memfilesservice", "wscntfy.exe",
+    // Common system services
+    "lightingservice", "rogcoreservice", "rogliveservice", "mspcmanagerservice",
+    "armsvc.exe", "igfxem.exe", "igfxhk.exe", "nvcontainer.exe", "nvdisplay",
+    "amdrsserv", "radeonsoft", "gamingservices", "gamebar", "gamebarft",
+    // Steam & Gaming platforms
+    "steam.exe", "steamservice.exe", "steamwebhelper", "epicgameslauncher",
+    "origin.exe", "eadesktop.exe", "discord.exe", "discordptb", "discordcanary",
+    // Common apps
+    "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "brave.exe",
+    "spotify.exe", "teams.exe", "zoom.exe", "obs64.exe", "obs32.exe",
+    NULL
+};
+
 const char* g_SusWin[] = { 
     "cheat engine", "artmoney", "speed hack", "game hack", 
     "[aimbot]", "[wallhack]", "[esp]", "trainer", "injector",
+    "dll inject", "process hack", "memory edit",
     NULL 
 };
 const char* g_SusReg[] = { 
@@ -211,7 +235,7 @@ const char* g_SusReg[] = {
     "SOFTWARE\\Process Hacker",
     NULL 
 };
-const char* g_SusFile[] = { "aimbot", "wallhack", "cheat", "hack", "esp", NULL };
+const char* g_SusFile[] = { "aimbot", "wallhack", "cheat", "hack", "esp", "speedhack", "norecoil", NULL };
 
 const char* g_SusDLLs[] = {
     "opengl32.dll",  // Custom opengl hook (system dışında)
@@ -283,6 +307,16 @@ void ComputeDLLHash() {
 // ============================================
 // PROCESS SCANNER - DETAYLI
 // ============================================
+bool IsWhitelistedProcess(const char* name) {
+    char lower[MAX_PATH];
+    strcpy(lower, name);
+    ToLower(lower);
+    for (int i = 0; g_WhitelistProc[i]; i++) {
+        if (strstr(lower, g_WhitelistProc[i])) return true;
+    }
+    return false;
+}
+
 int ScanProcesses() {
     g_Processes.clear();
     int sus = 0;
@@ -309,14 +343,17 @@ int ScanProcesses() {
                 CloseHandle(hProc);
             }
             
-            // Check if suspicious
-            char name[MAX_PATH]; strcpy(name, pe.szExeFile); ToLower(name);
-            for (int i = 0; g_SusProc[i]; i++) {
-                if (strstr(name, g_SusProc[i])) {
-                    pi.suspicious = true;
-                    sus++;
-                    Log("SUS PROC: %s (%s)", pe.szExeFile, pi.path.c_str());
-                    break;
+            // Whitelist kontrolü - sistem process'lerini atla
+            if (!IsWhitelistedProcess(pe.szExeFile)) {
+                // Check if suspicious
+                char name[MAX_PATH]; strcpy(name, pe.szExeFile); ToLower(name);
+                for (int i = 0; g_SusProc[i]; i++) {
+                    if (strstr(name, g_SusProc[i])) {
+                        pi.suspicious = true;
+                        sus++;
+                        Log("SUS PROC: %s (%s)", pe.szExeFile, pi.path.c_str());
+                        break;
+                    }
                 }
             }
             
@@ -542,7 +579,12 @@ std::string BuildJson() {
     json += "\"reg_sus\":" + std::to_string(g_iRegistrySus) + ",";
     json += "\"timestamp\":" + std::to_string(GetTickCount()) + ",";
     
-    // File hashes - DETAYLI
+    // Özet istatistikler
+    json += "\"total_processes\":" + std::to_string(g_Processes.size()) + ",";
+    json += "\"total_modules\":" + std::to_string(g_Modules.size()) + ",";
+    json += "\"total_windows\":" + std::to_string(g_Windows.size()) + ",";
+    
+    // File hashes - DETAYLI (her zaman gönder - blacklist kontrolü için)
     json += "\"hashes\":[";
     bool first = true;
     for (auto& h : g_FileCache) {
@@ -555,46 +597,75 @@ std::string BuildJson() {
     }
     json += "],";
     
-    // Processes - DETAYLI
+    // Processes - SADECE ŞÜPHELİ OLANLAR + İLK 20 (özet için)
     json += "\"processes\":[";
     first = true;
+    int procCount = 0;
     for (auto& p : g_Processes) {
-        if (!first) json += ",";
-        json += "{\"name\":\"" + EscapeJson(p.name) + "\",";
-        json += "\"path\":\"" + EscapeJson(p.path) + "\",";
-        json += "\"pid\":" + std::to_string(p.pid) + ",";
-        json += "\"suspicious\":" + std::string(p.suspicious ? "true" : "false") + "}";
-        first = false;
+        if (p.suspicious || procCount < 20) {
+            if (!first) json += ",";
+            json += "{\"name\":\"" + EscapeJson(p.name) + "\",";
+            json += "\"path\":\"" + EscapeJson(p.path) + "\",";
+            json += "\"pid\":" + std::to_string(p.pid) + ",";
+            json += "\"suspicious\":" + std::string(p.suspicious ? "true" : "false") + "}";
+            first = false;
+            procCount++;
+        }
     }
     json += "],";
     
-    // Modules (hl.exe loaded DLLs) - DETAYLI
+    // Modules - SADECE OYUN KLASÖRÜNDEN OLANLAR (sistem DLL'leri hariç)
     json += "\"modules\":[";
     first = true;
+    char gamePathLower[MAX_PATH];
+    strcpy(gamePathLower, g_szGameDir);
+    ToLower(gamePathLower);
+    
     for (auto& m : g_Modules) {
-        if (!first) json += ",";
-        json += "{\"name\":\"" + EscapeJson(m.name) + "\",";
-        json += "\"path\":\"" + EscapeJson(m.path) + "\",";
-        json += "\"hash\":\"" + m.hash + "\",";
-        json += "\"size\":" + std::to_string(m.size) + "}";
-        first = false;
+        char modPathLower[MAX_PATH];
+        strcpy(modPathLower, m.path.c_str());
+        ToLower(modPathLower);
+        
+        // Sadece oyun klasöründeki DLL'leri gönder
+        if (strstr(modPathLower, "half-life") || strstr(modPathLower, "steam") || 
+            strstr(modPathLower, gamePathLower) || strstr(modPathLower, "\\valve\\") ||
+            strstr(modPathLower, "\\ag\\") || strstr(modPathLower, "\\cstrike\\")) {
+            if (!first) json += ",";
+            json += "{\"name\":\"" + EscapeJson(m.name) + "\",";
+            json += "\"path\":\"" + EscapeJson(m.path) + "\",";
+            json += "\"hash\":\"" + m.hash + "\",";
+            json += "\"size\":" + std::to_string(m.size) + "}";
+            first = false;
+        }
     }
     json += "],";
     
-    // Windows - DETAYLI
+    // Windows - SADECE ŞÜPHELİ OLANLAR + HL/AG ile ilgili olanlar
     json += "\"windows\":[";
     first = true;
     int winCount = 0;
     for (auto& w : g_Windows) {
-        if (winCount >= 50) break; // Limit
         if (w.title.empty()) continue;
-        if (!first) json += ",";
-        json += "{\"title\":\"" + EscapeJson(w.title) + "\",";
-        json += "\"class\":\"" + EscapeJson(w.className) + "\",";
-        json += "\"pid\":" + std::to_string(w.pid) + ",";
-        json += "\"suspicious\":" + std::string(w.suspicious ? "true" : "false") + "}";
-        first = false;
-        winCount++;
+        
+        char titleLower[256];
+        strncpy(titleLower, w.title.c_str(), 255);
+        ToLower(titleLower);
+        
+        // Şüpheli veya oyunla ilgili pencereleri gönder
+        bool isRelevant = w.suspicious || 
+                          strstr(titleLower, "half-life") || strstr(titleLower, "counter") ||
+                          strstr(titleLower, "agtr") || strstr(titleLower, " ag ") ||
+                          strstr(titleLower, "steam");
+        
+        if (isRelevant || winCount < 10) {
+            if (!first) json += ",";
+            json += "{\"title\":\"" + EscapeJson(w.title) + "\",";
+            json += "\"class\":\"" + EscapeJson(w.className) + "\",";
+            json += "\"pid\":" + std::to_string(w.pid) + ",";
+            json += "\"suspicious\":" + std::string(w.suspicious ? "true" : "false") + "}";
+            first = false;
+            winCount++;
+        }
     }
     json += "]";
     

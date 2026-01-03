@@ -1,5 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
+#define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
+#include <objbase.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -19,13 +21,13 @@
 #define AGTR_INITIAL_DELAY 5000
 
 // ============================================
-// DINPUT FORWARDING - Orijinal DLL'e yonlendir
+// DINPUT FORWARDING
 // ============================================
 HMODULE g_hOriginalDInput = NULL;
 
-typedef HRESULT(WINAPI* DirectInputCreateA_t)(HINSTANCE, DWORD, LPVOID*, LPUNKNOWN);
-typedef HRESULT(WINAPI* DirectInputCreateW_t)(HINSTANCE, DWORD, LPVOID*, LPUNKNOWN);
-typedef HRESULT(WINAPI* DirectInputCreateEx_t)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
+typedef HRESULT(WINAPI* DirectInputCreateA_t)(HINSTANCE, DWORD, LPVOID*, IUnknown*);
+typedef HRESULT(WINAPI* DirectInputCreateW_t)(HINSTANCE, DWORD, LPVOID*, IUnknown*);
+typedef HRESULT(WINAPI* DirectInputCreateEx_t)(HINSTANCE, DWORD, REFIID, LPVOID*, IUnknown*);
 typedef HRESULT(WINAPI* DllCanUnloadNow_t)();
 typedef HRESULT(WINAPI* DllGetClassObject_t)(REFCLSID, REFIID, LPVOID*);
 typedef HRESULT(WINAPI* DllRegisterServer_t)();
@@ -57,15 +59,15 @@ bool LoadOriginalDInput() {
 }
 
 extern "C" {
-__declspec(dllexport) HRESULT WINAPI DirectInputCreateA(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPUNKNOWN punkOuter) {
+__declspec(dllexport) HRESULT WINAPI DirectInputCreateA(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, IUnknown* punkOuter) {
     if (!LoadOriginalDInput() || !pDirectInputCreateA) return E_FAIL;
     return pDirectInputCreateA(hinst, dwVersion, ppDI, punkOuter);
 }
-__declspec(dllexport) HRESULT WINAPI DirectInputCreateW(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, LPUNKNOWN punkOuter) {
+__declspec(dllexport) HRESULT WINAPI DirectInputCreateW(HINSTANCE hinst, DWORD dwVersion, LPVOID* ppDI, IUnknown* punkOuter) {
     if (!LoadOriginalDInput() || !pDirectInputCreateW) return E_FAIL;
     return pDirectInputCreateW(hinst, dwVersion, ppDI, punkOuter);
 }
-__declspec(dllexport) HRESULT WINAPI DirectInputCreateEx(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPVOID* ppvOut, LPUNKNOWN punkOuter) {
+__declspec(dllexport) HRESULT WINAPI DirectInputCreateEx(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPVOID* ppvOut, IUnknown* punkOuter) {
     if (!LoadOriginalDInput() || !pDirectInputCreateEx) return E_FAIL;
     return pDirectInputCreateEx(hinst, dwVersion, riidltf, ppvOut, punkOuter);
 }
@@ -106,7 +108,7 @@ public:
         unsigned int index=(count[0]>>3)&0x3f,padLen=(index<56)?(56-index):(120-index);
         static unsigned char PADDING[64]={0x80}; Update(PADDING,padLen); Update(bits,8); Encode(digest,state,16);
     }
-    std::string GetHashString() { unsigned char d[16]; Final(d); char h[33]; for(int i=0;i<16;i++)sprintf_s(h+i*2,3,"%02x",d[i]); return std::string(h); }
+    std::string GetHashString() { unsigned char d[16]; Final(d); char h[33]; for(int i=0;i<16;i++)sprintf(h+i*2,"%02x",d[i]); return std::string(h); }
 private:
     unsigned int state[4],count[2]; unsigned char buffer[64];
     void Encode(unsigned char* o,const unsigned int* in,unsigned int len){for(unsigned int i=0,j=0;j<len;i++,j+=4){o[j]=in[i]&0xff;o[j+1]=(in[i]>>8)&0xff;o[j+2]=(in[i]>>16)&0xff;o[j+3]=(in[i]>>24)&0xff;}}
@@ -162,8 +164,8 @@ std::map<std::string,std::string> g_Hashes;
 // ============================================
 void Log(const char* fmt,...) {
     char path[MAX_PATH];
-    strcpy_s(path,g_szGameDir.c_str());
-    strcat_s(path,"\\agtr_anticheat.log");
+    strcpy(path,g_szGameDir.c_str());
+    strcat(path,"\\agtr_anticheat.log");
     FILE* f=fopen(path,"a");
     if(f) {
         SYSTEMTIME st; GetLocalTime(&st);
@@ -187,7 +189,7 @@ void GenHWID() {
     int cpu[4]={0}; __cpuid(cpu,0);
     DWORD vol=0; GetVolumeInformationA("C:\\",NULL,0,&vol,NULL,NULL,NULL,0);
     char pc[MAX_COMPUTERNAME_LENGTH+1]={0}; DWORD sz=sizeof(pc); GetComputerNameA(pc,&sz);
-    sprintf_s(g_szHWID,"%08X%08X%08X",cpu[0]^cpu[1],vol,(pc[0]<<24)|(pc[1]<<16)|(pc[2]<<8)|pc[3]);
+    sprintf(g_szHWID,"%08X%08X%08X",cpu[0]^cpu[1],vol,(pc[0]<<24)|(pc[1]<<16)|(pc[2]<<8)|pc[3]);
     Log("HWID: %s",g_szHWID);
 }
 
@@ -241,10 +243,10 @@ int ScanMod() {
     } } } return sus;
 }
 
-void GenToken() { sprintf_s(g_szToken,"%08lX%08lX",GetTickCount(),GetCurrentProcessId()); }
+void GenToken() { sprintf(g_szToken,"%08lX%08lX",GetTickCount(),GetCurrentProcessId()); }
 
 void WriteResult() {
-    char p[MAX_PATH]; strcpy_s(p,g_szGameDir.c_str()); strcat_s(p,"\\agtr_result.txt");
+    char p[MAX_PATH]; strcpy(p,g_szGameDir.c_str()); strcat(p,"\\agtr_result.txt");
     FILE* f=fopen(p,"w"); if(f) {
         fprintf(f,"TOKEN=%s\nPASSED=%d\nSUSPICIOUS=%d\nHWID=%s\nDEBUGGER=%d\nVERSION=%s\nTIMESTAMP=%lu\n",
             g_szToken,g_bPassed?1:0,g_iSusCount,g_szHWID,g_bDebugger?1:0,AGTR_VERSION,(unsigned long)time(NULL));
@@ -253,7 +255,7 @@ void WriteResult() {
 }
 
 void WriteHashes() {
-    char p[MAX_PATH]; strcpy_s(p,g_szGameDir.c_str()); strcat_s(p,"\\agtr_hashes.txt");
+    char p[MAX_PATH]; strcpy(p,g_szGameDir.c_str()); strcat(p,"\\agtr_hashes.txt");
     FILE* f=fopen(p,"w"); if(f) {
         fprintf(f,"# AGTR Hashes v%s\n# HWID: %s\n\n",AGTR_VERSION,g_szHWID);
         for(auto& h:g_Hashes) fprintf(f,"%s|%s\n",h.first.c_str(),h.second.c_str());
@@ -262,7 +264,7 @@ void WriteHashes() {
 }
 
 void WriteSendCfg() {
-    char p[MAX_PATH]; strcpy_s(p,g_szGameDir.c_str()); strcat_s(p,"\\agtr_send.cfg");
+    char p[MAX_PATH]; strcpy(p,g_szGameDir.c_str()); strcat(p,"\\agtr_send.cfg");
     FILE* f=fopen(p,"w"); if(f) {
         fprintf(f,"// AGTR Anti-Cheat Commands\n");
         for(auto& h:g_Hashes) fprintf(f,"agtr_hash %s %s\n",h.second.c_str(),h.first.c_str());

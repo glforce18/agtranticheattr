@@ -17,20 +17,14 @@ jobs:
       with:
         arch: x86
     
-    - name: Create build directory
-      run: mkdir build
-      
     - name: Build DLL
       run: |
-        cl /nologo /O2 /MT /LD /W3 /EHsc /D "WIN32" /D "NDEBUG" /D "_WINDOWS" ^
-           src/agtr_winmm.cpp ^
-           /link /DEF:src/winmm.def /OUT:build/winmm.dll /MACHINE:X86 ^
-           winmm.lib winhttp.lib ws2_32.lib iphlpapi.lib psapi.lib advapi32.lib user32.lib
+        cl /nologo /O2 /MT /LD /W3 /EHsc /D "WIN32" /D "NDEBUG" /D "_WINDOWS" agtr_winmm.cpp /link /DEF:winmm.def /OUT:winmm.dll /MACHINE:X86 winmm.lib winhttp.lib ws2_32.lib iphlpapi.lib psapi.lib advapi32.lib user32.lib
       shell: cmd
       
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: AGTR-winmm-dll
-        path: build/winmm.dll
+        path: winmm.dll
         retention-days: 90

@@ -1,4 +1,4 @@
-name: Build AGTR DInput DLL
+name: Build AGTR winmm.dll
 
 on:
   push:
@@ -7,19 +7,30 @@ on:
 
 jobs:
   build:
-    runs-on: windows-2019
+    runs-on: windows-latest
     
     steps:
     - uses: actions/checkout@v4
     
-    - name: Configure
-      run: cmake -B build -G "Visual Studio 16 2019" -A Win32
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x86
     
-    - name: Build
-      run: cmake --build build --config Release
-    
-    - name: Upload
+    - name: Create build directory
+      run: mkdir build
+      
+    - name: Build DLL
+      run: |
+        cl /nologo /O2 /MT /LD /W3 /EHsc /D "WIN32" /D "NDEBUG" /D "_WINDOWS" ^
+           src/agtr_winmm.cpp ^
+           /link /DEF:src/winmm.def /OUT:build/winmm.dll /MACHINE:X86 ^
+           winmm.lib winhttp.lib ws2_32.lib iphlpapi.lib psapi.lib advapi32.lib user32.lib
+      shell: cmd
+      
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: AGTR-AntiCheat-dinput
-        path: build/Release/dinput.dll
+        name: AGTR-winmm-dll
+        path: build/winmm.dll
+        retention-days: 90
